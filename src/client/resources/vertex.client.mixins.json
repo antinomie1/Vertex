@@ -1,9 +1,12 @@
 {
   "required": true,
   "minVersion": "0.8",
-  "package": "dev.vertex.client.mixin",
+  "package": "dev.vertex.mixin",
   "compatibilityLevel": "JAVA_25",
-  "client": [],
+  "client": [
+    "LevelRendererCaptureMixin",
+    "ChunkSectionsToRenderInvoker"
+  ],
   "injectors": {
     "defaultRequire": 1
   },
