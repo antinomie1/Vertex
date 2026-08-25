@@ -253,8 +253,9 @@ object PackChain {
         val prog = PackFrontend.loadComposite(packRoot)
         dev.vertex.Vertex.log.info("[Vertex] pack loaded ({}/{}): samplers={} varying='{}'", w, h, prog.samplers, prog.varyingName)
 
-        val source = ShaderSource { id, _ ->
-            when (id.path) {
+        val source = ShaderSource { id, type ->
+            dev.vertex.Vertex.log.info("[Vertex] src-query: {} ({}) type={}", id, id.namespace, type)
+            val out = when (id.path) {
                 "pack/post.v" -> POST_VSH
                 "pack/normals.f" -> NORMAL_FSH.replace("__TEXEL__", "vec2(${1.0 / w}, ${1.0 / h})")
                 "pack/composite.f" -> LegacyTranslator.fragment(prog)
@@ -262,6 +263,8 @@ object PackChain {
                 "gterrain.f" -> GTERRAIN_FSH
                 else -> null
             }
+            dev.vertex.Vertex.log.info("[Vertex] src-answer: {} -> {}", id, if (out != null) "HIT" else "MISS")
+            out
         }
 
         normals = compile(device, source, id("pack/post.v"), id("pack/normals.f"),
