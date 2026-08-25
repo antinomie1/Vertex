@@ -286,7 +286,8 @@ object PackChain {
         }
         fun terrainOverride(multi: Boolean): RenderPipeline {
             val tag = if (multi) "_m" else ""
-            val declarative = com.mojang.renderpearl.api.pipeline.RenderPipeline.builder(RenderPipelines.TERRAIN_SNIPPET)
+            val snippet = if (multi) RenderPipelines.MULTIDRAW_TERRAIN_SNIPPET else RenderPipelines.TERRAIN_SNIPPET
+            val declarative = com.mojang.renderpearl.api.pipeline.RenderPipeline.builder(snippet)
                 .withLocation(Identifier.fromNamespaceAndPath("vertex", "pipeline/gterrain$tag"))
                 .withFragmentShader(Identifier.fromNamespaceAndPath("vertex", "gterrain.f"))
                 .build()
