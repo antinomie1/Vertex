@@ -10,6 +10,7 @@ import com.mojang.renderpearl.api.pipeline.PrimitiveTopology
 import com.mojang.renderpearl.api.pipeline.ShaderSource
 import com.mojang.renderpearl.api.pipeline.UniformType
 import com.mojang.renderpearl.api.textures.FilterMode
+import com.mojang.renderpearl.api.textures.GpuTexture
 import com.mojang.renderpearl.api.textures.GpuTextureView
 import dev.vertex.frontend.PackFrontend
 import dev.vertex.frontend.SamplePack
@@ -21,13 +22,15 @@ import net.minecraft.resources.Identifier
 import java.util.Optional
 
 /**
- * G1 切片2：真包加载——composite 程序经翻译器进链，场景色作 colortex0。
+ * G1 切片3a：包链双通道——colortex0（场景色）+ depthtex0（真实场景深度的拷贝）。
  */
 object PackChain {
     private var composite: CompiledRenderPipeline? = null
     private var blit: CompiledRenderPipeline? = null
-    private var tempTex: com.mojang.renderpearl.api.textures.GpuTexture? = null
+    private var tempTex: GpuTexture? = null
     private var tempView: GpuTextureView? = null
+    private var depthTex: GpuTexture? = null
+    private var depthView: GpuTextureView? = null
     private var w = 0
     private var h = 0
     private var failed = false
@@ -39,10 +42,13 @@ object PackChain {
             ensurePipelines(device)
             val main = Minecraft.getInstance().gameRenderer.mainRenderTarget()
             val sceneView = main.colorTextureView ?: return
-            ensureTemp(device, main.width, main.height)
-            val tv = tempView ?: return
+            val mainDepth = main.depthTexture ?: return
+            ensureSize(device, main.width, main.height)
 
             val encoder = device.createCommandEncoder()
+            // 场景深度 → 我们的 D32 拷贝（END_MAIN 时深度尚未被清除）
+            encoder.copyTextureToTexture(mainDepth, depthTex!!, 0, 0, 0, 0, 0, w, h)
+
             val sampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR)
 
             fun pass(label: String, color: GpuTextureView, input: GpuTextureView, samplerName: String, pipe: CompiledRenderPipeline) {
@@ -54,25 +60,47 @@ object PackChain {
                     it.draw(3, 1, 0, 0)
                 }
             }
-            pass("vertex-pack-composite", tv, sceneView, "colortex0", composite!!)
-            pass("vertex-pack-blit", sceneView, tv, "InSampler", blit!!)
+
+            // P1：包 composite —— 同时采样 colortex0 与 depthtex0
+            val packPass: RenderPass = encoder.createRenderPass({ "vertex-pack-composite" }, tv(), Optional.empty())
+            packPass.use {
+                RenderSystem.bindDefaultUniforms(it)
+                it.setPipeline(composite!!)
+                it.setUniform("colortex0", sceneView, sampler)
+                it.setUniform("depthtex0", depthView!!, sampler)
+                it.draw(3, 1, 0, 0)
+            }
+
+            // P2：回屏
+            pass("vertex-pack-blit", sceneView, tv(), "InSampler", blit!!)
         } catch (t: Throwable) {
             failed = true
             dev.vertex.Vertex.log.error("[Vertex] pack chain disabled for this session", t)
         }
     }
 
-    private const val POST_VSH = """#version 330
-#extension GL_ARB_separate_shader_objects : require
+    private fun tv(): GpuTextureView = tempView!!
 
-layout(location = 0) out vec2 texCoord;
+    private fun ensureSize(device: com.mojang.renderpearl.api.device.GpuDevice, width: Int, height: Int) {
+        if (tempView != null && depthView != null && w == width && h == height) return
+        tempView?.close(); tempTex?.close()
+        depthView?.close(); depthTex?.close()
 
-void main() {
-    vec2 uv = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2));
-    gl_Position = vec4(uv * vec2(2, 2) - vec2(1, 1), 0.0, 1.0);
-    texCoord = uv;
-}
-"""
+        tempTex = device.createTexture(
+            { "vertex-pack-temp" },
+            GpuTexture.USAGE_TEXTURE_BINDING or GpuTexture.USAGE_RENDER_ATTACHMENT,
+            GpuFormat.RGBA8_UNORM, width, height, 1, 1
+        )
+        tempView = device.createTextureView(tempTex!!)
+
+        depthTex = device.createTexture(
+            { "vertex-depth-copy" },
+            GpuTexture.USAGE_TEXTURE_BINDING or GpuTexture.USAGE_COPY_DST,
+            GpuFormat.D32_FLOAT, width, height, 1, 1
+        )
+        depthView = device.createTextureView(depthTex!!)
+        w = width; h = height
+    }
 
     private fun ensurePipelines(device: com.mojang.renderpearl.api.device.GpuDevice) {
         if (composite != null && blit != null) return
@@ -84,29 +112,24 @@ void main() {
         val source = ShaderSource { id, _ ->
             when (id.path) {
                 "pack/post.v" -> POST_VSH
-                "pack/composite.v" -> LegacyTranslator.vertex(prog)
                 "pack/composite.f" -> LegacyTranslator.fragment(prog)
-                "pack/blit.f" -> """#version 330
-#extension GL_ARB_separate_shader_objects : require
-uniform sampler2D InSampler;
-layout(location = 0) in vec2 texCoord;
-layout(location = 0) out vec4 fragColor;
-void main() { fragColor = vec4(texture(InSampler, texCoord).rgb, 1.0); }
-"""
+                "pack/blit.f" -> BLIT_FSH
                 else -> null
             }
         }
+        val packLayout = BindGroupLayout.builder()
+            .withUniform("colortex0", UniformType.COMBINED_IMAGE_SAMPLER)
+            .withUniform("depthtex0", UniformType.COMBINED_IMAGE_SAMPLER)
+            .build()
 
         composite = compile(
             device, source,
-            id("pack/post.v"), id("pack/composite.f"),
-            layout = BindGroupLayout.builder()
-                .withUniform("colortex0", UniformType.COMBINED_IMAGE_SAMPLER)
-                .build(),
+            vs = id("pack/post.v"), fs = id("pack/composite.f"),
+            layout = packLayout,
         )
         blit = compile(
             device, source,
-            id("pack/post.v"), id("pack/blit.f"),
+            vs = id("pack/post.v"), fs = id("pack/blit.f"),
             layout = BindGroupLayouts.IN_SAMPLER,
         )
     }
@@ -132,16 +155,23 @@ void main() { fragColor = vec4(texture(InSampler, texCoord).rgb, 1.0); }
 
     private fun id(path: String) = Identifier.fromNamespaceAndPath("vertex", path)
 
-    private fun ensureTemp(device: com.mojang.renderpearl.api.device.GpuDevice, width: Int, height: Int) {
-        if (tempView != null && w == width && h == height) return
-        tempView?.close(); tempTex?.close()
-        tempTex = device.createTexture(
-            { "vertex-pack-temp" },
-            com.mojang.renderpearl.api.textures.GpuTexture.USAGE_TEXTURE_BINDING or
-                com.mojang.renderpearl.api.textures.GpuTexture.USAGE_RENDER_ATTACHMENT,
-            GpuFormat.RGBA8_UNORM, width, height, 1, 1
-        )
-        tempView = device.createTextureView(tempTex!!)
-        w = width; h = height
-    }
+    private const val POST_VSH = """#version 330
+#extension GL_ARB_separate_shader_objects : require
+
+layout(location = 0) out vec2 texCoord;
+
+void main() {
+    vec2 uv = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2));
+    gl_Position = vec4(uv * vec2(2, 2) - vec2(1, 1), 0.0, 1.0);
+    texCoord = uv;
+}
+"""
+
+    private const val BLIT_FSH = """#version 330
+#extension GL_ARB_separate_shader_objects : require
+uniform sampler2D InSampler;
+layout(location = 0) in vec2 texCoord;
+layout(location = 0) out vec4 fragColor;
+void main() { fragColor = vec4(texture(InSampler, texCoord).rgb, 1.0); }
+"""
 }

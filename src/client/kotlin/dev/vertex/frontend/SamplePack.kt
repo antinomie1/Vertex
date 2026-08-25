@@ -15,13 +15,17 @@ void main() {
 """
     val FSH = """#version 120
 uniform sampler2D colortex0;
+uniform sampler2D depthtex0;
 varying vec2 texcoord;
 void main() {
     vec3 c = texture2D(colortex0, texcoord).rgb;
     float g = dot(c, vec3(0.3, 0.59, 0.11));
     vec3 s = vec3(g * 1.25, g * 1.02, g * 0.72);
+    vec3 o = mix(c, s, 0.7);
+    float d = texture2D(depthtex0, texcoord).r;
+    o = mix(o, vec3(0.55, 0.75, 1.0), pow(d, 16.0) * 0.85);
     /* DRAWBUFFERS:0 */
-    gl_FragData[0] = vec4(mix(c, s, 0.7), 1.0);
+    gl_FragData[0] = vec4(o, 1.0);
 }
 """
 
