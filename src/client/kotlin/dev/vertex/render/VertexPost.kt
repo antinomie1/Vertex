@@ -24,7 +24,8 @@ import java.util.Optional
  */
 object VertexPost {
     private const val VSH = """#version 330
-out vec2 texCoord;
+#extension GL_ARB_separate_shader_objects : require
+layout(location = 0) out vec2 texCoord;
 void main() {
     vec2 uv = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2));
     gl_Position = vec4(uv * vec2(2, 2) - vec2(1, 1), 0.0, 1.0);
@@ -33,22 +34,23 @@ void main() {
 """
 
     private const val F1 = """#version 330
+#extension GL_ARB_separate_shader_objects : require
 uniform sampler2D InSampler;
-in vec2 texCoord;
+layout(location = 0) in vec2 texCoord;
 layout(location = 0) out vec4 fragColor;
 void main() {
     vec3 col = texture(InSampler, texCoord).rgb;
-    float r = length(texCoord - 0.5) * 1.35;
-    float gray = dot(col, vec3(0.299, 0.587, 0.114));
-    col = mix(col, vec3(gray), smoothstep(0.45, 1.0, r) * 0.6);
-    col *= 1.0 - smoothstep(0.55, 1.05, r) * 0.45;
+    float r = length(texCoord - 0.5);
+    col = mix(col, vec3(0.1, 0.9, 0.25), 0.35);
+    col *= 1.0 - smoothstep(0.35, 1.0, r) * 0.6;
     fragColor = vec4(col, 1.0);
 }
 """
 
     private const val F2 = """#version 330
+#extension GL_ARB_separate_shader_objects : require
 uniform sampler2D InSampler;
-in vec2 texCoord;
+layout(location = 0) in vec2 texCoord;
 layout(location = 0) out vec4 fragColor;
 void main() {
     fragColor = vec4(texture(InSampler, texCoord).rgb, 1.0);
@@ -62,6 +64,7 @@ void main() {
     private var w = 0
     private var h = 0
     private var failed = false
+    private var announced = false
 
     fun drawChain() {
         if (failed) return
@@ -87,6 +90,7 @@ void main() {
             }
             pass("vertex-post1", tv, sceneView, p1!!)
             pass("vertex-post2", sceneView, tv, p2!!)
+            if (!announced) { announced = true; dev.vertex.Vertex.log.info("[Vertex] post chain ACTIVE ({}x{})", w, h) }
         } catch (t: Throwable) {
             failed = true
             dev.vertex.Vertex.log.error("[Vertex] post chain disabled for this session", t)
