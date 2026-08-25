@@ -22,6 +22,6 @@ public abstract class LevelRendererCaptureMixin {
         boolean consistentDepthRequired,
         CallbackInfo ci
     ) {
-        VertexRuntime.sections = sections;
+        VertexRuntime.INSTANCE.setSections(sections);
     }
 }
