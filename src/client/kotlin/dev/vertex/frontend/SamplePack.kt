@@ -19,7 +19,10 @@ uniform sampler2D depthtex0;
 varying vec2 texcoord;
 void main() {
     float d = texture2D(depthtex0, texcoord).r;
-    o = mix(o, vec3(0.55, 0.75, 1.0), smoothstep(0.008, 0.05, d) * 0.85);
+    o = mix(o, vec3(0.55, 0.75, 1.0), smoothstep(0.006, 0.05, d) * 0.9);
+    vec3 n = texture2D(normalsTex, texcoord).rgb * 2.0 - 1.0;
+    float li = dot(normalize(n), normalize(vec3(0.35, 0.7, 0.45))) * 0.5 + 0.5;
+    o *= 0.55 + 0.75 * li;
     /* DRAWBUFFERS:0 */
     gl_FragData[0] = vec4(o, 1.0);
 }
