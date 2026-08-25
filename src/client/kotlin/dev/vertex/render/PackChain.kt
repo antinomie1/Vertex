@@ -106,8 +106,8 @@ object PackChain {
                 rp.draw(3, 1, 0, 0)
             })
 
-            // 切片4：地形覆盖重绘——默认关闭，等 PipelineCache 注册方案落地
-            redrawTerrain()
+            // 切片4：地形覆盖重绘——实验性，默认关闭（RenderPearl 资源预载约束，见 docs/dev-env.md）
+            if (System.getProperty("vertex.redraw") == "true") redrawTerrain()
 
             if (dbg && dbgFrame % 120L == 2L) {
                 debugColorReadback(device, main.colorTexture!!, "d-after-terrain")
