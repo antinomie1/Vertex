@@ -63,7 +63,7 @@ object PackChain {
             val sceneView = main.colorTextureView ?: return
             val mainDepth = main.depthTexture ?: return
             ensureSize(device, main.width, main.height)
-            installMergedCacheOnce(device)
+            installMergedCache(device)
             ensurePipelines(device)
             if (composite == null || blit == null || normals == null || terrainOverrideBase == null || terrainOverrideMulti == null) {
                 dev.vertex.Vertex.log.error(
@@ -138,7 +138,7 @@ object PackChain {
             val device = RenderSystem.getDevice()
             val main = Minecraft.getInstance().gameRenderer.mainRenderTarget()
             ensureSize(device, main.width, main.height)
-            installMergedCacheOnce(device)
+            installMergedCache(device)
             ensurePipelines(device)
 
             val atlasView = Minecraft.getInstance().textureManager
@@ -322,9 +322,8 @@ object PackChain {
     }
 
     /** 合并缓存：vertex 命名空间走翻译产物，其余委托游戏原 Source。安装一次。 */
-    private fun installMergedCacheOnce(device: com.mojang.renderpearl.api.device.GpuDevice) {
-        if (mergedInstalled) return
-        mergedInstalled = true
+    private fun installMergedCache(device: com.mojang.renderpearl.api.device.GpuDevice) {
+        // 资源重载会整体替换游戏缓存：每帧重新确保安装（开销可忽略）
         val sentinel = com.mojang.blaze3d.pipeline.PipelineCache(device, ShaderSource { _, _ -> null })
         val original = RenderSystem.setCurrentPipelineCache(sentinel)
         RenderSystem.setCurrentPipelineCache(original!!)
