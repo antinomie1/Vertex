@@ -63,6 +63,12 @@ object PackChain {
             val mainDepth = main.depthTexture ?: return
             ensureSize(device, main.width, main.height)
             ensurePipelines(device)
+            if (composite == null || blit == null || normals == null || terrainOverrideBase == null || terrainOverrideMulti == null) {
+                dev.vertex.Vertex.log.error(
+                    "[Vertex] null check: composite={} blit={} normals={} tBase={} tMulti={}",
+                    composite != null, blit != null, normals != null, terrainOverrideBase != null, terrainOverrideMulti != null
+                )
+            }
 
             val encoder = device.createCommandEncoder()
             // 场景深度拷贝（END_MAIN 时深度尚未清除）
@@ -117,7 +123,7 @@ object PackChain {
         }
     }
 
-    /** 切片4：以包程序覆盖方式重绘不透明地形层。 */
+    /** 切片4：以包程序覆盖方式重绘不透明地形层（镜像 vanilla renderLayers 绑定）。 */
     fun redrawTerrain() {
         if (terrainBroken) return
         try {
@@ -130,26 +136,30 @@ object PackChain {
 
             val atlasView = Minecraft.getInstance().textureManager
                 .getTexture(TextureAtlas.LOCATION_BLOCKS)?.textureView ?: return
+            val lightmap = Minecraft.getInstance().gameRenderer.lightmap()
             val sampler = device.createSampler(
-                AddressMode.CLAMP_TO_EDGE, AddressMode.CLAMP_TO_EDGE,
+                com.mojang.renderpearl.api.textures.AddressMode.CLAMP_TO_EDGE,
+                com.mojang.renderpearl.api.textures.AddressMode.CLAMP_TO_EDGE,
                 FilterMode.LINEAR, FilterMode.LINEAR, 1, OptionalDouble.empty()
             )
+            val autoIndices = RenderSystem.getSequentialBuffer(PrimitiveTopology.QUADS)
+            val maxIdx = inv.vertexMaxIndicesRequired()
+            val defaultIndexBuffer = if (maxIdx == 0) null else autoIndices.getBuffer()
+            val defaultIndexType = if (maxIdx == 0) null else autoIndices.type()
+
             val encoder = device.createCommandEncoder()
-            // 重绘期间临时换入持有包源码的 PipelineCache，结束后还原
-            val prev = RenderSystem.setCurrentPipelineCache(packCache!!)
-            try {
-                val pass: RenderPass = encoder.createRenderPass(
-                    { "vertex-terrain-pack" }, main.colorTextureView!!, Optional.empty(),
-                    main.depthTextureView, OptionalDouble.empty()
-                )
-                pass.use {
-                    RenderSystem.bindDefaultUniforms(it)
-                    for (layer in ChunkSectionLayerGroup.OPAQUE.layers()) {
-                        inv.invokeRender(layer, it, null, null, terrainOverrideBase!!, terrainOverrideMulti!!)
-                    }
+            val pass: RenderPass = encoder.createRenderPass(
+                { "vertex-terrain-pack" }, main.colorTextureView!!, Optional.empty(),
+                main.depthTextureView, OptionalDouble.empty()
+            )
+            pass.use {
+                RenderSystem.bindDefaultUniforms(it)
+                it.setUniform("TerrainUniform", inv.vertexTerrainTransformUbo())
+                it.setUniform("Sampler0", atlasView, sampler)
+                it.setUniform("Sampler2", lightmap, sampler)
+                for (layer in ChunkSectionLayerGroup.OPAQUE.layers()) {
+                    inv.invokeRender(layer, it, defaultIndexBuffer, defaultIndexType, terrainOverrideBase!!, terrainOverrideMulti!!)
                 }
-            } finally {
-                RenderSystem.setCurrentPipelineCache(prev!!)
             }
         } catch (t: Throwable) {
             terrainBroken = true
