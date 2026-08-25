@@ -16,8 +16,13 @@ void main() {
     val FSH = """#version 120
 uniform sampler2D colortex0;
 uniform sampler2D depthtex0;
+uniform sampler2D normalsTex;
 varying vec2 texcoord;
 void main() {
+    vec3 c = texture2D(colortex0, texcoord).rgb;
+    float g = dot(c, vec3(0.3, 0.59, 0.11));
+    vec3 s = vec3(g * 1.25, g * 1.02, g * 0.72);
+    vec3 o = mix(c, s, 0.15);
     float d = texture2D(depthtex0, texcoord).r;
     o = mix(o, vec3(0.55, 0.75, 1.0), smoothstep(0.006, 0.05, d) * 0.9);
     vec3 n = texture2D(normalsTex, texcoord).rgb * 2.0 - 1.0;

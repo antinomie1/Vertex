@@ -38,6 +38,8 @@ object PackChain {
     private var normals: CompiledRenderPipeline? = null
     private var terrainOverrideBase: RenderPipeline? = null
     private var terrainOverrideMulti: RenderPipeline? = null
+    private var packCache: com.mojang.blaze3d.pipeline.PipelineCache? = null
+    private var prevCache: com.mojang.blaze3d.pipeline.PipelineCache? = null
     private var tempTex: GpuTexture? = null
     private var tempView: GpuTextureView? = null
     private var depthTex: GpuTexture? = null
@@ -96,8 +98,12 @@ object PackChain {
                 rp.draw(3, 1, 0, 0)
             })
 
-            // 切片4：包程序覆盖重绘不透明地形（官方优化路径不变）
-            redrawTerrain()
+            // 切片4：地形覆盖重绘——默认关闭，等 PipelineCache 注册方案落地
+            if (System.getProperty("vertex.redraw") == "true") redrawTerrain()
+
+            if (dbg && dbgFrame % 120L == 2L) {
+                debugColorReadback(device, main.colorTexture!!, "d-after-terrain")
+            }
 
             if (dbg && dbgFrame % 120L == 0L) {
                 debugColorReadback(device, tempTex!!, "b-composite-out")
@@ -129,15 +135,21 @@ object PackChain {
                 FilterMode.LINEAR, FilterMode.LINEAR, 1, OptionalDouble.empty()
             )
             val encoder = device.createCommandEncoder()
-            val pass: RenderPass = encoder.createRenderPass(
-                { "vertex-terrain-pack" }, main.colorTextureView!!, Optional.empty(),
-                main.depthTextureView, OptionalDouble.empty()
-            )
-            pass.use {
-                RenderSystem.bindDefaultUniforms(it)
-                for (layer in ChunkSectionLayerGroup.OPAQUE.layers()) {
-                    inv.invokeRender(layer, it, null, null, terrainOverrideBase!!, terrainOverrideMulti!!)
+            // 重绘期间临时换入持有包源码的 PipelineCache，结束后还原
+            val prev = RenderSystem.setCurrentPipelineCache(packCache!!)
+            try {
+                val pass: RenderPass = encoder.createRenderPass(
+                    { "vertex-terrain-pack" }, main.colorTextureView!!, Optional.empty(),
+                    main.depthTextureView, OptionalDouble.empty()
+                )
+                pass.use {
+                    RenderSystem.bindDefaultUniforms(it)
+                    for (layer in ChunkSectionLayerGroup.OPAQUE.layers()) {
+                        inv.invokeRender(layer, it, null, null, terrainOverrideBase!!, terrainOverrideMulti!!)
+                    }
                 }
+            } finally {
+                RenderSystem.setCurrentPipelineCache(prev!!)
             }
         } catch (t: Throwable) {
             terrainBroken = true
@@ -246,9 +258,12 @@ object PackChain {
         // 地形覆盖管线：基于官方 TERRAIN_SNIPPET，仅替换片元
         val gterrainSource = ShaderSource { id, _ ->
             when (id.path) {
-                "pack/gterrain.f" -> GTERRAIN_FSH
+                "gterrain.f" -> GTERRAIN_FSH
                 else -> null
             }
+        }
+        if (packCache == null || builtForW != w || builtForH != h) {
+            packCache = com.mojang.blaze3d.pipeline.PipelineCache(device, source)
         }
         fun terrainOverride(multi: Boolean): RenderPipeline {
             val tag = if (multi) "_m" else ""
@@ -258,8 +273,13 @@ object PackChain {
                 .build()
             return declarative
         }
-        terrainOverrideBase = terrainOverride(false)
-        terrainOverrideMulti = terrainOverride(true)
+        try {
+            terrainOverrideBase = terrainOverride(false)
+            terrainOverrideMulti = terrainOverride(true)
+        } catch (t: Throwable) {
+            terrainBroken = true
+            dev.vertex.Vertex.log.error("[Vertex] terrain overrides unavailable -> redraw off", t)
+        }
         builtForW = w; builtForH = h
     }
 
@@ -335,7 +355,7 @@ layout(location = 4) in float chunkVisibility;
 layout(location = 0) out vec4 fragColor;
 void main() {
     vec4 t = texture(Sampler0, texCoord0) * vertexColor;
-    fragColor = vec4(mix(t.rgb, vec3(0.85, 0.06, 0.06), 0.55), t.a);
+    fragColor = vec4(1.0, 0.0, 0.0, 1.0); // G0-style debug: 纯红平板
 }
 """
 }
