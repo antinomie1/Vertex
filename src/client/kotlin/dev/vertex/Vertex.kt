@@ -1,5 +1,6 @@
 package dev.vertex
 
+import dev.vertex.render.VertexRenderer
 import net.fabricmc.api.ClientModInitializer
 import org.slf4j.LoggerFactory
 
@@ -8,9 +9,7 @@ object Vertex : ClientModInitializer {
     val log = LoggerFactory.getLogger(MOD_ID)
 
     override fun onInitializeClient() {
-        log.info(
-            "[Vertex] initialized. Backend detection pending G0; " +
-                "expected: co-resident VkDevice (see docs/DESIGN.md §1)"
-        )
+        log.info("[Vertex] init; registering G0 frame seam (docs/DESIGN.md §10)")
+        VertexRenderer.register()
     }
 }

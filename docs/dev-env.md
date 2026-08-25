@@ -32,3 +32,9 @@
 ## 当前状态
 - `./gradlew build` ✅ BUILD SUCCESSFUL → build/libs/vertex-0.1.0-alpha.jar
 - 下一步 = G0 尖峰（DESIGN.md §10）：设备创建点注入 mixin（Java）+ 自有 command stream 三角形直写主目标。
+
+## G0 切片 1 新事实（2026-08-26）
+1. **WorldRenderEvents 已死**：无混淆纪元 fabric-rendering-v1(25.3.x) 改为 `net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents`，事件族 START_MAIN/AFTER_OPAQUE_TERRAIN/.../END_MAIN/BEGIN_TRANSLUCENT 等——END_MAIN 即 Vitrail 式"世界后、无打开 pass"缝，且是官方事件（Fabric 侧无需 mixin）。
+2. fabric-api 聚合 jar 是零类清单壳；真实类在模块构件（fabric-rendering-v1 等），经聚合 POM 传递可达，client 源集需显式 `clientImplementation` 覆盖。
+3. MC 26.2 捆绑 **LWJGL 3.4.1**：org.lwjgl.vulkan 直接可用，vkCreateDevice 等静态在 VK10；Kotlin 里与自身顶层函数偶发解析歧义 → 全限定调用最稳。
+4. Window.handle 在 Mojmap 下为私有字段——干脆不取窗口句柄（G0 无 surface 需求）。
