@@ -76,6 +76,8 @@ object VkCore {
             val pDevice = s.mallocPointer(1)
             vkCheck(org.lwjgl.vulkan.VK10.vkCreateDevice(physical, devCi, null as VkAllocationCallbacks?, pDevice), "vkCreateDevice")
 
+            device = VkDevice(pDevice[0], physical, devCi)
+
             val pQueue = s.mallocPointer(1)
             vkGetDeviceQueue(device, graphicsFamily, 0, pQueue)
             graphicsQueue = VkQueue(pQueue[0], device)
