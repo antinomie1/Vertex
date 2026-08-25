@@ -31,7 +31,10 @@ dependencies {
     // 最小事件模块集（聚合包的 permission-api mixin 与 snapshot-9 不兼容）
     listOf("implementation", "clientImplementation").forEach { cfg ->
         cfg("net.fabricmc:fabric-loader:${project.property("loader_version")}")
-        cfg("net.fabricmc.fabric-api:fabric-api:${project.property("fabric_version")}")
+        cfg("net.fabricmc.fabric-api:fabric-rendering-v1:${project.property("fabric_rendering")}") {
+            // snapshot-9 上该模块自身可用，但其传递依赖 lifecycle-events 的 chunk mixin 与 -9 不兼容——排除
+            exclude(group = "net.fabricmc.fabric-api", module = "fabric-lifecycle-events-v1")
+        }
         cfg("net.fabricmc:fabric-language-kotlin:${project.property("flk_version")}")
     }
  }
