@@ -1,19 +1,22 @@
 package dev.vertex.render
 
-import com.mojang.blaze3d.PrimitiveTopology
-import com.mojang.blaze3d.GpuFormat
-import com.mojang.blaze3d.pipeline.ColorTargetState
-import com.mojang.blaze3d.shaders.ShaderSource
-import java.util.Optional
-import com.mojang.blaze3d.systems.RenderPass
 import com.mojang.blaze3d.systems.RenderSystem
+import com.mojang.renderpearl.api.GpuFormat
+import com.mojang.renderpearl.api.commands.RenderPass
+import com.mojang.renderpearl.api.pipeline.ColorTargetState
+import com.mojang.renderpearl.api.pipeline.CompiledRenderPipeline
+import com.mojang.renderpearl.api.pipeline.PrimitiveTopology
+import com.mojang.renderpearl.api.pipeline.RenderPipeline
+import com.mojang.renderpearl.api.pipeline.ShaderSource
 import net.minecraft.client.Minecraft
 import net.minecraft.client.renderer.RenderPipelines
 import net.minecraft.resources.Identifier
+import java.util.Optional
 
 /**
- * G0 切片 2：经官方 RenderPipeline/RenderPass 通道把自绘内容写进主目标。
- * 同一 VkDevice（协同驻留）、同一命令流、零内部手术——DESIGN.md §1 的合法注入路径实证。
+ * G0 切片2（26.3-snapshot-9 / RenderPearl 版）：
+ * 自定义 GLSL 经 compilePipeline(pipeline, ShaderSource) 编译，
+ * createRenderPass 写入主目标——官方通道，同设备零手术。
  */
 object VertexGpu {
     private const val VSH = """#version 330
@@ -33,15 +36,15 @@ void main() {
 }
 """
 
-    private var pipeline: com.mojang.blaze3d.pipeline.RenderPipeline? = null
+    private var compiledPipeline: CompiledRenderPipeline? = null
     private var failed = false
 
-    /** 每帧调用（END_MAIN）。首次惰性建管线；失败即本会话静默停用。 */
+    /** 每帧调用（END_MAIN）。首次惰性编译；失败即本会话静默停用。 */
     fun drawOverlay() {
         if (failed) return
         try {
             val device = RenderSystem.getDevice()
-            val p = pipeline ?: buildPipeline(device).also { pipeline = it }
+            val p = compiledPipeline ?: buildPipeline(device).also { compiledPipeline = it }
             val view = Minecraft.getInstance().gameRenderer.mainRenderTarget().colorTextureView
                 ?: return
             val encoder = device.createCommandEncoder()
@@ -56,7 +59,7 @@ void main() {
         }
     }
 
-    private fun buildPipeline(device: com.mojang.blaze3d.systems.GpuDevice): com.mojang.blaze3d.pipeline.RenderPipeline {
+    private fun buildPipeline(device: com.mojang.renderpearl.api.device.GpuDevice): CompiledRenderPipeline {
         val source = ShaderSource { id, _ ->
             when (id.path) {
                 "g0v" -> VSH
@@ -64,15 +67,15 @@ void main() {
                 else -> null
             }
         }
-        val pipeline = com.mojang.blaze3d.pipeline.RenderPipeline.builder(RenderPipelines.GLOBALS_SNIPPET)
+        val declarative = RenderPipeline.builder(RenderPipelines.GLOBALS_SNIPPET)
             .withLocation("vertex:pipeline/g0")
             .withVertexShader(Identifier.fromNamespaceAndPath("vertex", "g0v"))
             .withFragmentShader(Identifier.fromNamespaceAndPath("vertex", "g0f"))
             .withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
-            .withColorTargetState(ColorTargetState.DEFAULT)
+            .withColorTargetState(ColorTargetState(Optional.empty(), GpuFormat.RGBA8_UNORM, ColorTargetState.WRITE_ALL))
             .build()
-        val compiled = device.precompilePipeline(pipeline, source)
-        check(compiled.isValid) { "[Vertex] G0 pipeline precompile invalid" }
-        return pipeline
+        val compiled = device.compilePipeline(declarative, source)
+        check(compiled != null && !compiled.isClosed()) { "[Vertex] G0 pipeline failed to compile" }
+        return compiled
     }
 }
