@@ -17,7 +17,7 @@ object LegacyTranslator {
         return """#version 330
 #extension GL_ARB_separate_shader_objects : require
 
-layout(location = 0) out $name;
+layout(location = 0) out vec2 $name;
 
 void main() {
     vec2 uv = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2));
