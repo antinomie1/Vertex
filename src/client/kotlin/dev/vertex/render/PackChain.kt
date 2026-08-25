@@ -53,6 +53,7 @@ object PackChain {
     private var failed = false
     private var terrainBroken = false
     private var dbgFrame = 0L
+    private var mergedInstalled = false
 
     fun draw() {
         if (failed) return
@@ -62,6 +63,7 @@ object PackChain {
             val sceneView = main.colorTextureView ?: return
             val mainDepth = main.depthTexture ?: return
             ensureSize(device, main.width, main.height)
+            installMergedCacheOnce(device)
             ensurePipelines(device)
             if (composite == null || blit == null || normals == null || terrainOverrideBase == null || terrainOverrideMulti == null) {
                 dev.vertex.Vertex.log.error(
@@ -105,7 +107,7 @@ object PackChain {
             })
 
             // 切片4：地形覆盖重绘——默认关闭，等 PipelineCache 注册方案落地
-            if (System.getProperty("vertex.redraw") == "true") redrawTerrain()
+            redrawTerrain()
 
             if (dbg && dbgFrame % 120L == 2L) {
                 debugColorReadback(device, main.colorTexture!!, "d-after-terrain")
@@ -132,6 +134,7 @@ object PackChain {
             val device = RenderSystem.getDevice()
             val main = Minecraft.getInstance().gameRenderer.mainRenderTarget()
             ensureSize(device, main.width, main.height)
+            installMergedCacheOnce(device)
             ensurePipelines(device)
 
             val atlasView = Minecraft.getInstance().textureManager
@@ -264,6 +267,8 @@ object PackChain {
                 .withUniform("depthtex0", UniformType.COMBINED_IMAGE_SAMPLER)
                 .withUniform("normalsTex", UniformType.COMBINED_IMAGE_SAMPLER)
                 .build())
+        blit = compile(device, source, id("pack/post.v"), id("pack/blit.f"),
+            BindGroupLayouts.IN_SAMPLER)
 
         // 地形覆盖管线：基于官方 TERRAIN_SNIPPET，仅替换片元
         val gterrainSource = ShaderSource { id, _ ->
@@ -310,6 +315,38 @@ object PackChain {
             .build()
         return device.compilePipeline(declarative, source)
             ?: throw IllegalStateException("compile failed: ${fs.path}")
+    }
+
+    /** 合并缓存：vertex 命名空间走翻译产物，其余委托游戏原 Source。安装一次。 */
+    private fun installMergedCacheOnce(device: com.mojang.renderpearl.api.device.GpuDevice) {
+        if (mergedInstalled) return
+        mergedInstalled = true
+        val sentinel = com.mojang.blaze3d.pipeline.PipelineCache(device, ShaderSource { _, _ -> null })
+        val original = RenderSystem.setCurrentPipelineCache(sentinel)
+        RenderSystem.setCurrentPipelineCache(original!!)
+        val gameSource: ShaderSource? = (original as? dev.vertex.mixin.PipelineCacheAccessor)?.vertexShaderSource()
+        dev.vertex.Vertex.log.info("[Vertex] merged cache: capturedGameSource={}", gameSource != null)
+        mergedSource = ShaderSource { id, type ->
+            if (id.namespace == "vertex") ourShader(id.path) else gameSource?.get(id, type)
+        }
+    }
+
+    var mergedSource: ShaderSource? = null
+        private set
+
+    private fun ourShader(path: String): String? = when (path) {
+        "post.v" -> POST_VSH
+        "normals.f" -> NORMAL_FSH.replace("__TEXEL__", "vec2(${1.0 / w}, ${1.0 / h})")
+        "blit.f" -> BLIT_FSH
+        "composite.f" -> cachedCompositeFragment()
+        "gterrain.f" -> GTERRAIN_FSH
+        else -> null
+    }
+
+    private fun cachedCompositeFragment(): String {
+        val runDir = Minecraft.getInstance().gameDirectory.toPath()
+        val prog = PackFrontend.loadComposite(SamplePack.ensure(runDir.resolve("shaderpacks")))
+        return LegacyTranslator.fragment(prog)
     }
 
     private fun id(path: String) = Identifier.fromNamespaceAndPath("vertex", path)
