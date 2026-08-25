@@ -113,6 +113,10 @@ object PackChain {
                 debugColorReadback(device, main.colorTexture!!, "d-after-terrain")
             }
 
+            if (dbg && dbgFrame % 120L == 2L) {
+                debugColorReadback(device, main.colorTexture!!, "d-after-terrain")
+            }
+
             if (dbg && dbgFrame % 120L == 0L) {
                 debugColorReadback(device, tempTex!!, "b-composite-out")
                 debugColorReadback(device, main.colorTexture!!, "c-screen-final")
@@ -324,7 +328,14 @@ object PackChain {
         val sentinel = com.mojang.blaze3d.pipeline.PipelineCache(device, ShaderSource { _, _ -> null })
         val original = RenderSystem.setCurrentPipelineCache(sentinel)
         RenderSystem.setCurrentPipelineCache(original!!)
-        val gameSource: ShaderSource? = (original as? dev.vertex.mixin.PipelineCacheAccessor)?.vertexShaderSource()
+        val gameSource: ShaderSource? = try {
+            val f = com.mojang.blaze3d.pipeline.PipelineCache::class.java.getDeclaredField("shaderSource")
+            f.isAccessible = true
+            f.get(original) as? ShaderSource
+        } catch (t: Throwable) {
+            dev.vertex.Vertex.log.warn("[Vertex] cannot reflect game shaderSource", t)
+            null
+        }
         dev.vertex.Vertex.log.info("[Vertex] merged cache: capturedGameSource={}", gameSource != null)
         mergedSource = ShaderSource { id, type ->
             if (id.namespace == "vertex") ourShader(id.path) else gameSource?.get(id, type)
