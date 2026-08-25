@@ -14,6 +14,8 @@ object VertexRenderer {
     private var booted = false
     private var failed = false
     private var frames = 0L
+    private val layers = (System.getProperty("vertex.layers") ?: "overlay,post,pack").split(',')
+    private fun enabled(name: String) = name in layers
 
     fun register() {
         Vertex.log.info("[Vertex] register(): wiring seams")
@@ -21,9 +23,9 @@ object VertexRenderer {
             if (failed) return@register
             try {
                 ensureBoot()
-                VertexGpu.drawOverlay()
-                VertexPost.drawChain()
-                PackChain.draw()
+                if (enabled("overlay")) VertexGpu.drawOverlay()
+                if (enabled("post")) VertexPost.drawChain()
+                if (enabled("pack")) PackChain.draw()
                 frames++
                 val stopAfter = System.getProperty("vertex.autostop")?.toLongOrNull()
                 if (stopAfter != null && frames >= stopAfter * 60L) {

@@ -3,6 +3,7 @@ package dev.vertex.render
 import com.mojang.blaze3d.systems.RenderSystem
 import com.mojang.renderpearl.api.GpuFormat
 import com.mojang.renderpearl.api.commands.RenderPass
+import com.mojang.renderpearl.api.buffers.GpuBuffer
 import com.mojang.renderpearl.api.pipeline.BindGroupLayout
 import com.mojang.renderpearl.api.pipeline.ColorTargetState
 import com.mojang.renderpearl.api.pipeline.CompiledRenderPipeline
@@ -34,6 +35,7 @@ object PackChain {
     private var w = 0
     private var h = 0
     private var failed = false
+    private var dbgFrame = 0L
 
     fun draw() {
         if (failed) return
@@ -61,6 +63,11 @@ object PackChain {
                 }
             }
 
+            val dbg = System.getProperty("vertex.debugReadback") == "true"
+            if (dbg && dbgFrame % 120L == 0L) {
+                debugReadback(device, main.colorTexture!!, "a-scene-in")
+            }
+
             // P1：包 composite —— 同时采样 colortex0 与 depthtex0
             val packPass: RenderPass = encoder.createRenderPass({ "vertex-pack-composite" }, tv(), Optional.empty())
             packPass.use {
@@ -73,6 +80,16 @@ object PackChain {
 
             // P2：回屏
             pass("vertex-pack-blit", sceneView, tv(), "InSampler", blit!!)
+
+            if (dbg && dbgFrame % 120L == 0L) {
+                debugDepthReadback(device, depthTex!!, "depth-copy")
+            }
+            if (dbg && dbgFrame % 120L == 0L) {
+                debugReadback(device, tempTex!!, "b-composite-out")
+                debugReadback(device, main.colorTexture!!, "c-screen-final")
+                dev.vertex.Vertex.log.info("[Vertex] dbg frame={} paused={}", dbgFrame, Minecraft.getInstance().isPaused)
+            }
+            dbgFrame++
         } catch (t: Throwable) {
             failed = true
             dev.vertex.Vertex.log.error("[Vertex] pack chain disabled for this session", t)
@@ -151,6 +168,52 @@ object PackChain {
             .build()
         return device.compilePipeline(declarative, source)
             ?: throw IllegalStateException("compile failed: ${fs.path}")
+    }
+
+    private fun debugReadback(device: com.mojang.renderpearl.api.device.GpuDevice, tex: GpuTexture, tag: String) {
+        val bw = w / 4 * 4
+        val bh = h / 4 * 4
+        if (bw <= 0 || bh <= 0) return
+        val buf = device.createBuffer({ "vertex-dbg" }, GpuBuffer.USAGE_MAP_READ or GpuBuffer.USAGE_COPY_DST, bw.toLong() * bh * 4L)
+        device.createCommandEncoder().copyTextureToBuffer(tex, buf, 0L, {
+            try {
+                buf.map(true, false).use { mv ->
+                    val d = mv.data()
+                    val bpr = d.limit() / bh
+                    var r = 0L; var g = 0L; var b = 0L; var n = 0L
+                    for (yy in 0 until bh step bh / 16 + 1) for (xx in 0 until bw step bw / 16 + 1) {
+                        val o = yy * bpr + xx * 4
+                        r += d.get(o).toLong() and 0xFF; g += d.get(o + 1).toLong() and 0xFF; b += d.get(o + 2).toLong() and 0xFF; n++
+                    }
+                    if (n > 0) dev.vertex.Vertex.log.info("[Vertex] readback {}: R={} G={} B={} n={}", tag, r / n, g / n, b / n, n)
+                }
+            } catch (t: Throwable) {
+                dev.vertex.Vertex.log.error("[Vertex] readback $tag failed", t)
+            } finally { buf.close() }
+        }, 0)
+    }
+
+
+    private fun debugDepthReadback(device: com.mojang.renderpearl.api.device.GpuDevice, tex: GpuTexture, tag: String) {
+        val bw = w / 4 * 4
+        val bh = h / 4 * 4
+        if (bw <= 0 || bh <= 0) return
+        val buf = device.createBuffer({ "vertex-dbg-d" }, GpuBuffer.USAGE_MAP_READ or GpuBuffer.USAGE_COPY_DST, bw.toLong() * bh * 4L)
+        device.createCommandEncoder().copyTextureToBuffer(tex, buf, 0L, {
+            try {
+                buf.map(true, false).use { mv ->
+                    val fb = mv.data().asFloatBuffer()
+                    val bpr = fb.capacity() / bh
+                    var mn = 1f; var mx = 0f; var sum = 0f; var n = 0
+                    for (yy in 0 until bh step bh / 16 + 1) for (xx in 0 until bw step bw / 16 + 1) {
+                        val v = fb.get(yy * bpr + xx); mn = minOf(mn, v); mx = maxOf(mx, v); sum += v; n++
+                    }
+                    if (n > 0) dev.vertex.Vertex.log.info("[Vertex] depth {}: min={} max={} avg={}", tag, mn, mx, sum / n)
+                }
+            } catch (t: Throwable) {
+                dev.vertex.Vertex.log.error("[Vertex] depth readback failed", t)
+            } finally { buf.close() }
+        }, 0)
     }
 
     private fun id(path: String) = Identifier.fromNamespaceAndPath("vertex", path)
