@@ -22,6 +22,7 @@ object VertexRenderer {
                 ensureBoot()
                 VertexGpu.drawOverlay()
                 VertexPost.drawChain()
+                PackChain.draw()
                 frames++
                 if (frames % 600L == 0L) {
                     Vertex.log.info("[Vertex] alive(level): frame {} on '{}'", frames, VkCore.gpuName)

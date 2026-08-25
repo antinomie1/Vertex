@@ -1,0 +1,32 @@
+package dev.vertex.frontend
+
+import java.nio.file.Files
+import java.nio.file.Path
+
+/**
+ * 包前端 v0：只认 composite.{vsh,fsh}。
+ * 提取：varying 名（顶点透传模式）、片元采样器清单、片元源码。
+ */
+data class LoadedProgram(
+    val vertexSource: String,
+    val fragmentSource: String,
+    val varyingName: String?,
+    val samplers: List<String>,
+)
+
+object PackFrontend {
+    fun loadComposite(packRoot: Path): LoadedProgram {
+        val sh = packRoot.resolve("shaders")
+        val vsh = Files.readString(sh.resolve("composite.vsh"))
+        val fsh = Files.readString(sh.resolve("composite.fsh"))
+
+        val varying = Regex("""varying\s+\w+\s+(\w+)\s*;""").findAll(vsh)
+            .map { it.groupValues[1] }.singleOrNull()
+            ?: throw IllegalStateException("composite.vsh: 期望恰好一个 varying（透传模式）")
+
+        val samplers = Regex("""uniform\s+sampler2D\s+(\w+)\s*;""").findAll(fsh)
+            .map { it.groupValues[1] }.toList()
+
+        return LoadedProgram(vsh, fsh, varying, samplers)
+    }
+}
