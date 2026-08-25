@@ -259,6 +259,7 @@ object PackChain {
                 "pack/normals.f" -> NORMAL_FSH.replace("__TEXEL__", "vec2(${1.0 / w}, ${1.0 / h})")
                 "pack/composite.f" -> LegacyTranslator.fragment(prog)
                 "pack/blit.f" -> BLIT_FSH
+                "gterrain.f" -> GTERRAIN_FSH
                 else -> null
             }
         }
