@@ -6,8 +6,8 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents
 
 /**
- * G0 帧缝：LevelRenderEvents.END_MAIN = 世界渲染结束、无打开 pass 的挂接点（DESIGN.md §1）。
- * 本切片只做：一次性 Vulkan 引导 + 存活心跳。绘制注入在下一刀。
+ * G0 帧缝：LevelRenderEvents.END_MAIN（DESIGN.md §1）。
+ * 切片1：自有 Vulkan 栈引导 + 心跳。切片2：官方通道主目标叠加注入。
  */
 object VertexRenderer {
     private var booted = false
@@ -19,14 +19,15 @@ object VertexRenderer {
             if (failed) return@register
             try {
                 ensureBoot()
+                VertexGpu.drawOverlay()
                 frames++
                 if (frames % 300L == 0L) {
                     Vertex.log.info("[Vertex] alive: frame {} on '{}'", frames, VkCore.gpuName)
                 }
             } catch (t: Throwable) {
-                // 遏制原则（DESIGN.md §12.2）：任何引导失败=本会话降档，绝不杀死游戏
+                // 遏制原则（DESIGN.md §12.2）：失败=本会话降档，绝不杀死游戏
                 failed = true
-                Vertex.log.error("[Vertex] bootstrap failed -> degraded to post-only Tier 0", t)
+                Vertex.log.error("[Vertex] degraded to Tier 0 for this session", t)
             }
         }
         ClientLifecycleEvents.CLIENT_STOPPING.register { VkCore.shutdown() }
