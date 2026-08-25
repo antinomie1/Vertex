@@ -1,6 +1,6 @@
 plugins {
     kotlin("jvm") version "2.4.10"
-    id("fabric-loom") version "1.17.19"
+    id("net.fabricmc.fabric-loom") version "1.17-SNAPSHOT"
 }
 
 group = "dev.vertex"
@@ -8,30 +8,46 @@ version = "0.1.0-alpha"
 
 base { archivesName = "vertex" }
 
-java {
-    toolchain { languageVersion = JavaLanguageVersion.of(25) }
-    withSourcesJar()
-}
-
 repositories {
     mavenCentral()
     maven("https://maven.fabricmc.net/")
 }
 
-dependencies {
-    minecraft("com.mojang:minecraft:${project.property("minecraft_version")}")
-    mappings(loom.officialMojangMappings())
-    modImplementation("net.fabricmc:fabric-loader:${project.property("loader_version")}")
-    modImplementation("net.fabricmc.fabric-api:fabric-api:${project.property("fabric_version")}")
-    // Kotlin 支持：FLK 运行时自带 stdlib，不要重复打包
-    modImplementation("net.fabricmc:fabric-language-kotlin:${project.property("flk_version")}")
+loom {
+    splitEnvironmentSourceSets()
+
+    mods {
+        create("vertex") {
+            sourceSet(sourceSets["main"])
+            sourceSet(sourceSets["client"])
+        }
+    }
 }
 
-tasks.processResources {
-    inputs.property("version", project.version)
+dependencies {
+    minecraft("com.mojang:minecraft:${project.property("minecraft_version")}")
+    // MC 26.1+ 无混淆：无 mappings 声明，依赖无需 remap 配置
+    implementation("net.fabricmc:fabric-loader:${project.property("loader_version")}")
+    implementation("net.fabricmc.fabric-api:fabric-api:${project.property("fabric_version")}")
+    implementation("net.fabricmc:fabric-language-kotlin:${project.property("flk_version")}")
+}
+
+tasks.withType<ProcessResources>().configureEach {
+    val version = project.version
+    inputs.property("version", version)
     filesMatching("fabric.mod.json") {
-        expand("version" to project.version)
+        expand("version" to version)
     }
+}
+
+tasks.withType<JavaCompile>().configureEach {
+    options.release = 25
+}
+
+java {
+    withSourcesJar()
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
 }
 
 kotlin {
@@ -40,6 +56,6 @@ kotlin {
 
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
     compilerOptions {
-        freeCompilerArgs.addAll("-Xjvm-default=all")
+        freeCompilerArgs.addAll("-jvm-default=all")
     }
 }

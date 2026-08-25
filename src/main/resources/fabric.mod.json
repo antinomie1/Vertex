@@ -12,11 +12,15 @@
       { "adapter": "kotlin", "value": "dev.vertex.Vertex" }
     ]
   },
-  "mixins": ["vertex.mixins.json"],
+  "mixins": [
+    "vertex.mixins.json",
+    { "config": "vertex.client.mixins.json", "environment": "client" }
+  ],
   "depends": {
     "fabricloader": ">=0.19.3",
     "fabric-api": "*",
     "fabric-language-kotlin": ">=1.13.13+kotlin.2.4.10",
-    "minecraft": ">=26.2"
+    "minecraft": "~26.2",
+    "java": ">=25"
   }
 }
