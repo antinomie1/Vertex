@@ -4,6 +4,7 @@ import com.mojang.blaze3d.systems.RenderSystem
 import dev.vertex.Vertex
 import dev.vertex.core.VkCore
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents
+import net.minecraft.client.Minecraft
 
 /**
  * G0+G1 帧缝：LevelRenderEvents.END_MAIN（DESIGN.md §1）。
@@ -24,6 +25,11 @@ object VertexRenderer {
                 VertexPost.drawChain()
                 PackChain.draw()
                 frames++
+                val stopAfter = System.getProperty("vertex.autostop")?.toLongOrNull()
+                if (stopAfter != null && frames >= stopAfter * 60L) {
+                    Vertex.log.info("[Vertex] autotest complete -> clean shutdown")
+                    Minecraft.getInstance().stop()
+                }
                 if (frames % 600L == 0L) {
                     Vertex.log.info("[Vertex] alive(level): frame {} on '{}'", frames, VkCore.gpuName)
                 }

@@ -55,6 +55,16 @@ java {
     targetCompatibility = JavaVersion.VERSION_25
 }
 
+// 无人值守测试：./gradlew runClient -Pvertex.quickplay=<存档名> [-Pvertex.autostop=秒]
+val quickplay = providers.gradleProperty("vertex.quickplay")
+val autostop = providers.gradleProperty("vertex.autostop")
+tasks.withType<JavaExec>().configureEach {
+    if (name == "runClient") {
+        if (quickplay.isPresent) args(listOf("--quickPlaySingleplayer", quickplay.get()))
+        if (autostop.isPresent) jvmArgs("-Dvertex.autostop=" + autostop.get())
+    }
+}
+
 kotlin {
     jvmToolchain(25)
 }

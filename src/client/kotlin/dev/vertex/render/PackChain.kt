@@ -62,6 +62,18 @@ object PackChain {
         }
     }
 
+    private const val POST_VSH = """#version 330
+#extension GL_ARB_separate_shader_objects : require
+
+layout(location = 0) out vec2 texCoord;
+
+void main() {
+    vec2 uv = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2));
+    gl_Position = vec4(uv * vec2(2, 2) - vec2(1, 1), 0.0, 1.0);
+    texCoord = uv;
+}
+"""
+
     private fun ensurePipelines(device: com.mojang.renderpearl.api.device.GpuDevice) {
         if (composite != null && blit != null) return
         val runDir = Minecraft.getInstance().gameDirectory.toPath()
@@ -71,6 +83,7 @@ object PackChain {
 
         val source = ShaderSource { id, _ ->
             when (id.path) {
+                "pack/post.v" -> POST_VSH
                 "pack/composite.v" -> LegacyTranslator.vertex(prog)
                 "pack/composite.f" -> LegacyTranslator.fragment(prog)
                 "pack/blit.f" -> """#version 330
@@ -86,14 +99,14 @@ void main() { fragColor = vec4(texture(InSampler, texCoord).rgb, 1.0); }
 
         composite = compile(
             device, source,
-            id("pack/composite.v"), id("pack/composite.f"),
+            id("pack/post.v"), id("pack/composite.f"),
             layout = BindGroupLayout.builder()
                 .withUniform("colortex0", UniformType.COMBINED_IMAGE_SAMPLER)
                 .build(),
         )
         blit = compile(
             device, source,
-            id("pack/blit.v"), id("pack/blit.f"),
+            id("pack/post.v"), id("pack/blit.f"),
             layout = BindGroupLayouts.IN_SAMPLER,
         )
     }
