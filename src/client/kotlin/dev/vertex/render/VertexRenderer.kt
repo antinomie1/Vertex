@@ -26,7 +26,6 @@ object VertexRenderer {
                 if (enabled("overlay")) VertexGpu.drawOverlay()
                 if (enabled("post")) VertexPost.drawChain()
                 if (enabled("pack")) PackChain.draw()
-                if (enabled("pack")) PackChain.redrawTerrain()
                 frames++
                 val stopAfter = System.getProperty("vertex.autostop")?.toLongOrNull()
                 if (stopAfter != null && frames >= stopAfter * 60L) {

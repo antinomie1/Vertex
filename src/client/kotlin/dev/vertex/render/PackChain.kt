@@ -9,10 +9,8 @@ import com.mojang.renderpearl.api.pipeline.BindGroupLayout
 import com.mojang.renderpearl.api.pipeline.ColorTargetState
 import com.mojang.renderpearl.api.pipeline.CompiledRenderPipeline
 import com.mojang.renderpearl.api.pipeline.PrimitiveTopology
-import com.mojang.renderpearl.api.pipeline.RenderPipeline
 import com.mojang.renderpearl.api.pipeline.ShaderSource
 import com.mojang.renderpearl.api.pipeline.UniformType
-import com.mojang.renderpearl.api.textures.AddressMode
 import com.mojang.renderpearl.api.textures.FilterMode
 import com.mojang.renderpearl.api.textures.GpuTexture
 import com.mojang.renderpearl.api.textures.GpuTextureView
@@ -22,24 +20,17 @@ import dev.vertex.translate.LegacyTranslator
 import net.minecraft.client.Minecraft
 import net.minecraft.client.renderer.BindGroupLayouts
 import net.minecraft.client.renderer.RenderPipelines
-import net.minecraft.client.renderer.chunk.ChunkSectionLayerGroup
-import net.minecraft.client.renderer.texture.TextureAtlas
 import net.minecraft.resources.Identifier
 import java.util.Optional
-import java.util.OptionalDouble
 
 /**
- * 包运行时核心：colortex0 + depthtex0 + normalsTex 三通道复合链，
- * 外加以管线覆盖方式重绘的不透明地形层（官方优化路径不受影响）。
+ * 包运行时核心：colortex0 + depthtex0 + normalsTex 三通道复合链。
+ * 不透明地形在主渲染 pass 内由 TerrainMesh 接管，避免二次重绘。
  */
 object PackChain {
     private var composite: CompiledRenderPipeline? = null
     private var blit: CompiledRenderPipeline? = null
     private var normals: CompiledRenderPipeline? = null
-    private var terrainOverrideBase: RenderPipeline? = null
-    private var terrainOverrideMulti: RenderPipeline? = null
-    private var packCache: com.mojang.blaze3d.pipeline.PipelineCache? = null
-    private var prevCache: com.mojang.blaze3d.pipeline.PipelineCache? = null
     private var tempTex: GpuTexture? = null
     private var tempView: GpuTextureView? = null
     private var depthTex: GpuTexture? = null
@@ -51,9 +42,7 @@ object PackChain {
     private var builtForW = 0
     private var builtForH = 0
     private var failed = false
-    private var terrainBroken = false
     private var dbgFrame = 0L
-    private var mergedInstalled = false
 
     fun draw() {
         if (failed) return
@@ -63,14 +52,7 @@ object PackChain {
             val sceneView = main.colorTextureView ?: return
             val mainDepth = main.depthTexture ?: return
             ensureSize(device, main.width, main.height)
-            installMergedCache(device)
             ensurePipelines(device)
-            if (composite == null || blit == null || normals == null || terrainOverrideBase == null || terrainOverrideMulti == null) {
-                dev.vertex.Vertex.log.error(
-                    "[Vertex] null check: composite={} blit={} normals={} tBase={} tMulti={}",
-                    composite != null, blit != null, normals != null, terrainOverrideBase != null, terrainOverrideMulti != null
-                )
-            }
 
             val encoder = device.createCommandEncoder()
             // 场景深度拷贝（END_MAIN 时深度尚未清除）
@@ -106,16 +88,6 @@ object PackChain {
                 rp.draw(3, 1, 0, 0)
             })
 
-            // 切片4：地形覆盖重绘——实验性，默认关闭（RenderPearl 资源预载约束，见 docs/dev-env.md）
-            if (System.getProperty("vertex.redraw") == "true") redrawTerrain()
-
-            if (dbg && dbgFrame % 120L == 2L) {
-                debugColorReadback(device, main.colorTexture!!, "d-after-terrain")
-            }
-
-            if (dbg && dbgFrame % 120L == 2L) {
-                debugColorReadback(device, main.colorTexture!!, "d-after-terrain")
-            }
 
             if (dbg && dbgFrame % 120L == 0L) {
                 debugColorReadback(device, tempTex!!, "b-composite-out")
@@ -129,50 +101,6 @@ object PackChain {
         }
     }
 
-    /** 切片4：以包程序覆盖方式重绘不透明地形层（镜像 vanilla renderLayers 绑定）。 */
-    fun redrawTerrain() {
-        if (terrainBroken) return
-        try {
-            val sections = dev.vertex.render.VertexRuntime.sections ?: return
-            val inv = sections as? dev.vertex.mixin.ChunkSectionsToRenderInvoker ?: return
-            val device = RenderSystem.getDevice()
-            val main = Minecraft.getInstance().gameRenderer.mainRenderTarget()
-            ensureSize(device, main.width, main.height)
-            installMergedCache(device)
-            ensurePipelines(device)
-
-            val atlasView = Minecraft.getInstance().textureManager
-                .getTexture(TextureAtlas.LOCATION_BLOCKS)?.textureView ?: return
-            val lightmap = Minecraft.getInstance().gameRenderer.lightmap()
-            val sampler = device.createSampler(
-                com.mojang.renderpearl.api.textures.AddressMode.CLAMP_TO_EDGE,
-                com.mojang.renderpearl.api.textures.AddressMode.CLAMP_TO_EDGE,
-                FilterMode.LINEAR, FilterMode.LINEAR, 1, OptionalDouble.empty()
-            )
-            val autoIndices = RenderSystem.getSequentialBuffer(PrimitiveTopology.QUADS)
-            val maxIdx = inv.vertexMaxIndicesRequired()
-            val defaultIndexBuffer = if (maxIdx == 0) null else autoIndices.getBuffer()
-            val defaultIndexType = if (maxIdx == 0) null else autoIndices.type()
-
-            val encoder = device.createCommandEncoder()
-            val pass: RenderPass = encoder.createRenderPass(
-                { "vertex-terrain-pack" }, main.colorTextureView!!, Optional.empty(),
-                main.depthTextureView, OptionalDouble.empty()
-            )
-            pass.use {
-                RenderSystem.bindDefaultUniforms(it)
-                it.setUniform("TerrainUniform", inv.vertexTerrainTransformUbo())
-                it.setUniform("Sampler0", atlasView, sampler)
-                it.setUniform("Sampler2", lightmap, sampler)
-                for (layer in ChunkSectionLayerGroup.OPAQUE.layers()) {
-                    inv.invokeRender(layer, it, defaultIndexBuffer, defaultIndexType, terrainOverrideBase!!, terrainOverrideMulti!!)
-                }
-            }
-        } catch (t: Throwable) {
-            terrainBroken = true
-            dev.vertex.Vertex.log.error("[Vertex] terrain redraw disabled for this session", t)
-        }
-    }
 
     private fun debugColorReadback(device: com.mojang.renderpearl.api.device.GpuDevice, tex: GpuTexture, tag: String) {
         val bw = w / 4 * 4
@@ -198,28 +126,6 @@ object PackChain {
         device.createCommandEncoder().copyTextureToBuffer(tex, buf, 0L, callback, 0)
     }
 
-    private fun debugDepthReadback(device: com.mojang.renderpearl.api.device.GpuDevice, tex: GpuTexture, tag: String) {
-        val bw = w / 4 * 4
-        val bh = h / 4 * 4
-        if (bw <= 0 || bh <= 0) return
-        val buf = device.createBuffer({ "vertex-dbg-d" }, GpuBuffer.USAGE_MAP_READ or GpuBuffer.USAGE_COPY_DST, bw.toLong() * bh * 4L)
-        val callback = java.lang.Runnable {
-            try {
-                buf.map(true, false).use { mv ->
-                    val fb = mv.data().asFloatBuffer()
-                    val bpr = fb.capacity() / bh
-                    var mn = 1f; var mx = 0f; var sum = 0f; var n = 0
-                    for (yy in 0 until bh step bh / 16 + 1) for (xx in 0 until bw step bw / 16 + 1) {
-                        val v = fb.get(yy * bpr + xx); mn = minOf(mn, v); mx = maxOf(mx, v); sum += v; n++
-                    }
-                    if (n > 0) dev.vertex.Vertex.log.info("[Vertex] depth {}: min={} max={} avg={}", tag, mn, mx, sum / n)
-                }
-            } catch (t: Throwable) {
-                dev.vertex.Vertex.log.error("[Vertex] depth readback $tag failed", t)
-            } finally { buf.close() }
-        }
-        device.createCommandEncoder().copyTextureToBuffer(tex, buf, 0L, callback, 0)
-    }
 
     private fun pass(
         encoder: CommandEncoder,
@@ -260,7 +166,6 @@ object PackChain {
                 "pack/normals.f" -> NORMAL_FSH.replace("__TEXEL__", "vec2(${1.0 / w}, ${1.0 / h})")
                 "pack/composite.f" -> LegacyTranslator.fragment(prog)
                 "pack/blit.f" -> BLIT_FSH
-                "gterrain.f" -> GTERRAIN_FSH
                 else -> null
             }
             dev.vertex.Vertex.log.info("[Vertex] src-answer: {} -> {}", id, if (out != null) "HIT" else "MISS")
@@ -278,32 +183,6 @@ object PackChain {
         blit = compile(device, source, id("pack/post.v"), id("pack/blit.f"),
             BindGroupLayouts.IN_SAMPLER)
 
-        // 地形覆盖管线：基于官方 TERRAIN_SNIPPET，仅替换片元
-        val gterrainSource = ShaderSource { id, _ ->
-            when (id.path) {
-                "gterrain.f" -> GTERRAIN_FSH
-                else -> null
-            }
-        }
-        if (packCache == null || builtForW != w || builtForH != h) {
-            packCache = com.mojang.blaze3d.pipeline.PipelineCache(device, source)
-        }
-        fun terrainOverride(multi: Boolean): RenderPipeline {
-            val tag = if (multi) "_m" else ""
-            val snippet = if (multi) RenderPipelines.MULTIDRAW_TERRAIN_SNIPPET else RenderPipelines.TERRAIN_SNIPPET
-            val declarative = com.mojang.renderpearl.api.pipeline.RenderPipeline.builder(snippet)
-                .withLocation(Identifier.fromNamespaceAndPath("vertex", "pipeline/gterrain$tag"))
-                .withFragmentShader(Identifier.fromNamespaceAndPath("vertex", "gterrain.f"))
-                .build()
-            return declarative
-        }
-        try {
-            terrainOverrideBase = terrainOverride(false)
-            terrainOverrideMulti = terrainOverride(true)
-        } catch (t: Throwable) {
-            terrainBroken = true
-            dev.vertex.Vertex.log.error("[Vertex] terrain overrides unavailable -> redraw off", t)
-        }
         builtForW = w; builtForH = h
     }
 
@@ -326,43 +205,6 @@ object PackChain {
             ?: throw IllegalStateException("compile failed: ${fs.path}")
     }
 
-    /** 合并缓存：vertex 命名空间走翻译产物，其余委托游戏原 Source。安装一次。 */
-    private fun installMergedCache(device: com.mojang.renderpearl.api.device.GpuDevice) {
-        // 资源重载会整体替换游戏缓存：每帧重新确保安装（开销可忽略）
-        val sentinel = com.mojang.blaze3d.pipeline.PipelineCache(device, ShaderSource { _, _ -> null })
-        val original = RenderSystem.setCurrentPipelineCache(sentinel)
-        RenderSystem.setCurrentPipelineCache(original!!)
-        val gameSource: ShaderSource? = try {
-            val f = com.mojang.blaze3d.pipeline.PipelineCache::class.java.getDeclaredField("shaderSource")
-            f.isAccessible = true
-            f.get(original) as? ShaderSource
-        } catch (t: Throwable) {
-            dev.vertex.Vertex.log.warn("[Vertex] cannot reflect game shaderSource", t)
-            null
-        }
-        dev.vertex.Vertex.log.info("[Vertex] merged cache: capturedGameSource={}", gameSource != null)
-        mergedSource = ShaderSource { id, type ->
-            if (id.namespace == "vertex") ourShader(id.path) else gameSource?.get(id, type)
-        }
-    }
-
-    var mergedSource: ShaderSource? = null
-        private set
-
-    private fun ourShader(path: String): String? = when (path) {
-        "post.v" -> POST_VSH
-        "normals.f" -> NORMAL_FSH.replace("__TEXEL__", "vec2(${1.0 / w}, ${1.0 / h})")
-        "blit.f" -> BLIT_FSH
-        "composite.f" -> cachedCompositeFragment()
-        "gterrain.f" -> GTERRAIN_FSH
-        else -> null
-    }
-
-    private fun cachedCompositeFragment(): String {
-        val runDir = Minecraft.getInstance().gameDirectory.toPath()
-        val prog = PackFrontend.loadComposite(SamplePack.ensure(runDir.resolve("shaderpacks")))
-        return LegacyTranslator.fragment(prog)
-    }
 
     private fun id(path: String) = Identifier.fromNamespaceAndPath("vertex", path)
 
@@ -404,20 +246,4 @@ layout(location = 0) out vec4 fragColor;
 void main() { fragColor = vec4(texture(InSampler, texCoord).rgb, 1.0); }
 """
 
-    /** 覆盖 vanilla 地形片元：红色调证明接管成功。 */
-    private const val GTERRAIN_FSH = """#version 330
-#extension GL_ARB_separate_shader_objects : require
-#include <minecraft:fog.glsl>
-uniform sampler2D Sampler0;
-layout(location = 0) in float sphericalVertexDistance;
-layout(location = 1) in float cylindricalVertexDistance;
-layout(location = 2) in vec4 vertexColor;
-layout(location = 3) in vec2 texCoord0;
-layout(location = 4) in float chunkVisibility;
-layout(location = 0) out vec4 fragColor;
-void main() {
-    vec4 t = texture(Sampler0, texCoord0) * vertexColor;
-    fragColor = vec4(1.0, 0.0, 0.0, 1.0); // G0-style debug: 纯红平板
-}
-"""
 }

@@ -4,8 +4,11 @@
   "package": "dev.vertex.mixin",
   "compatibilityLevel": "JAVA_25",
   "client": [
-    "LevelRendererCaptureMixin",
-    "ChunkSectionsToRenderInvoker"
+    "LevelRendererTerrainMeshMixin",
+    "SectionCompilerMeshMixin",
+    "SectionRenderDispatcherMeshMixin",
+    "ChunkSectionsToRenderMeshMixin",
+    "ChunkSectionsToRenderDrawMixin"
   ],
   "injectors": {
     "defaultRequire": 1
