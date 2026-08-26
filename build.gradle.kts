@@ -64,6 +64,8 @@ tasks.withType<JavaExec>().configureEach {
         if (autostop.isPresent) jvmArgs("-Dvertex.autostop=" + autostop.get())
         val layers = providers.gradleProperty("vertex.layers")
         if (layers.isPresent) jvmArgs("-Dvertex.layers=" + layers.get())
+        val drawMode = providers.gradleProperty("vertex.drawMode")
+        if (drawMode.isPresent) jvmArgs("-Dvertex.drawMode=" + drawMode.get())
         val dbg = providers.gradleProperty("vertex.debugReadback")
         if (dbg.isPresent) jvmArgs("-Dvertex.debugReadback=" + dbg.get())
     }

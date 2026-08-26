@@ -21,6 +21,10 @@ public abstract class ChunkSectionsToRenderDrawMixin {
     )
     private CompiledRenderPipeline vertex$compiledMeshPipeline(RenderPipeline pipeline) {
         CompiledRenderPipeline compiled = TerrainMesh.compiledFor(pipeline);
-        return compiled != null ? compiled : RenderSystem.getCompiledPipeline(pipeline);
+        if (compiled != null) {
+            TerrainMesh.noteDrawPath((Object) this instanceof ChunkSectionsToRender.DrawIndirect);
+            return compiled;
+        }
+        return RenderSystem.getCompiledPipeline(pipeline);
     }
 }

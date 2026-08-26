@@ -8,7 +8,9 @@
     "SectionCompilerMeshMixin",
     "SectionRenderDispatcherMeshMixin",
     "ChunkSectionsToRenderMeshMixin",
-    "ChunkSectionsToRenderDrawMixin"
+    "ChunkSectionsToRenderDrawMixin",
+    "ModelBlockRendererMeshMixin",
+    "VertexConsumerMeshMixin"
   ],
   "injectors": {
     "defaultRequire": 1

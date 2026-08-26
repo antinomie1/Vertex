@@ -21,10 +21,11 @@ public abstract class SectionRenderDispatcherMeshMixin {
         method = "lambda$new$0",
         at = @At(
             value = "INVOKE",
-            target = "Lcom/mojang/renderpearl/api/vertex/VertexFormat;getVertexSize()I"
+            target = "Lnet/minecraft/client/renderer/chunk/ChunkSectionLayer;pipeline(Z)Lcom/mojang/renderpearl/api/pipeline/RenderPipeline;"
         )
     )
-    private int vertex$meshStride(VertexFormat format) {
-        return TerrainMesh.strideFor(format);
+    private com.mojang.renderpearl.api.pipeline.RenderPipeline vertex$dispatcherPipeline(ChunkSectionLayer layer, boolean multidraw) {
+        com.mojang.renderpearl.api.pipeline.RenderPipeline custom = TerrainMesh.pipelineFor(layer, multidraw);
+        return custom != null ? custom : layer.pipeline(multidraw);
     }
 }

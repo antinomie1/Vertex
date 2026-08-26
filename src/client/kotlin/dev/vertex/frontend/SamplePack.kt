@@ -13,6 +13,33 @@ void main() {
     texcoord = (gl_TextureMatrix[0] * gl_MultiTexCoord0).xy;
 }
 """
+    val TERRAIN_VSH = """#version 120
+varying vec4 color;
+varying vec2 texcoord;
+varying vec3 normal;
+void main() {
+    gl_Position = ftransform();
+    texcoord = (gl_TextureMatrix[0] * gl_MultiTexCoord0).xy;
+    color = gl_Color;
+    normal = gl_NormalMatrix * gl_Normal;
+}
+"""
+
+    val TERRAIN_FSH = """#version 120
+uniform sampler2D texture;
+varying vec4 color;
+varying vec2 texcoord;
+varying vec3 normal;
+void main() {
+    vec4 albedo = texture2D(texture, texcoord) * color;
+    vec3 n = normalize(normal);
+    // 轻量方向光漫反射：证明包着色器逻辑直接接管地形
+    float diff = max(dot(n, normalize(vec3(0.2, 0.9, 0.3))), 0.0) * 0.25 + 0.75;
+    vec3 col = albedo.rgb * diff;
+    /* DRAWBUFFERS:0 */
+    gl_FragData[0] = vec4(col, albedo.a);
+}
+"""
     val FSH = """#version 120
 uniform sampler2D colortex0;
 uniform sampler2D depthtex0;
@@ -41,6 +68,10 @@ void main() {
         // 测试包由本模组生成：每次启动强制覆盖，保证与当前版本一致
         Files.writeString(vsh, VSH)
         Files.writeString(fsh, FSH)
+        val tvsh = root.resolve("gbuffers_terrain.vsh")
+        val tfsh = root.resolve("gbuffers_terrain.fsh")
+        Files.writeString(tvsh, TERRAIN_VSH)
+        Files.writeString(tfsh, TERRAIN_FSH)
         return dir.resolve(DIR_NAME)
     }
 }
