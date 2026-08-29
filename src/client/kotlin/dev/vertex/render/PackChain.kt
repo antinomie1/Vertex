@@ -28,7 +28,7 @@ import java.util.Optional
  * 不透明地形在主渲染 pass 内由 TerrainMesh 接管，避免二次重绘。
  */
 object PackChain {
-    private var composite: CompiledRenderPipeline? = null
+    private var screenPrograms = emptyList<ScreenProgram>()
     private var blit: CompiledRenderPipeline? = null
     private var normals: CompiledRenderPipeline? = null
     private var tempTex: GpuTexture? = null
@@ -43,6 +43,7 @@ object PackChain {
     private var builtForH = 0
     private var failed = false
     private var dbgFrame = 0L
+    private var needsNormals = false
 
     fun prepare() {
         if (failed) return
@@ -69,36 +70,34 @@ object PackChain {
             ensurePipelines(device)
 
             val encoder = device.createCommandEncoder()
-            // 场景深度拷贝（END_MAIN 时深度尚未清除）
-            encoder.copyTextureToTexture(mainDepth, depthTex!!, 0, 0, 0, 0, 0, w, h)
-
             val sampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR)
             val dbg = System.getProperty("vertex.debugReadback") == "true"
             if (dbg && dbgFrame % 120L == 0L) {
                 debugColorReadback(device, main.colorTexture!!, "a-scene-in")
             }
 
-            // N：深度→法线
-            pass(encoder, "vertex-pack-normals", normalView!!, { rp ->
+            val needsDepth = needsNormals || screenPrograms.any { "depthtex0" in it.samplers }
+            if (needsDepth) encoder.copyTextureToTexture(mainDepth, depthTex!!, 0, 0, 0, 0, 0, w, h)
+            if (needsNormals) pass(encoder, "vertex-pack-normals", normalView!!) { rp ->
                 rp.setPipeline(normals!!)
                 rp.setUniform("depthtex0", depthView!!, sampler)
-            })
+            }
 
-            // P1：包 composite —— albedo + 深度雾 + 法线光照
-            pass(encoder, "vertex-pack-composite", tempView!!, { rp ->
-                RenderSystem.bindDefaultUniforms(rp)
-                rp.setPipeline(composite!!)
-                rp.setUniform("colortex0", sceneView, sampler)
-                rp.setUniform("depthtex0", depthView!!, sampler)
-                rp.setUniform("normalsTex", normalView!!, sampler)
-            })
-
-            // P2：回屏
-            pass(encoder, "vertex-pack-blit", sceneView, { rp ->
+            var input = sceneView
+            screenPrograms.forEach { program ->
+                val output = if (input === sceneView) tempView!! else sceneView
+                pass(encoder, "vertex-pack-${program.name}", output) { rp ->
+                    RenderSystem.bindDefaultUniforms(rp)
+                    rp.setPipeline(program.pipeline)
+                    program.samplers.forEach { name -> rp.setUniform(name, samplerView(name, input), sampler) }
+                }
+                input = output
+            }
+            if (input !== sceneView) pass(encoder, "vertex-pack-blit", sceneView) { rp ->
                 RenderSystem.bindDefaultUniforms(rp)
                 rp.setPipeline(blit!!)
-                rp.setUniform("InSampler", tempView!!, sampler)
-            })
+                rp.setUniform("InSampler", input, sampler)
+            }
 
 
             if (dbg && dbgFrame % 120L == 0L) {
@@ -165,36 +164,54 @@ object PackChain {
     }
 
     private fun ensurePipelines(device: com.mojang.renderpearl.api.device.GpuDevice) {
-        if (composite != null && blit != null && normals != null && builtForW == w && builtForH == h) return
+        if (screenPrograms.isNotEmpty() && blit != null && (!needsNormals || normals != null && builtForW == w && builtForH == h)) return
         val runDir = Minecraft.getInstance().gameDirectory.toPath()
         val packRoot = PackRuntime.root(runDir)
-        val prog = PackFrontend.loadComposite(packRoot, PackRuntime.options())
-        dev.vertex.Vertex.log.info("[Vertex] pack loaded ({}/{}): samplers={} varying='{}'", w, h, prog.samplers, prog.varyingName)
+        val programs = PackFrontend.loadScreenChain(packRoot, PackRuntime.options())
+        needsNormals = programs.any { "normalsTex" in it.samplers }
+        dev.vertex.Vertex.log.info("[Vertex] screen chain loaded ({}/{}): {}", w, h, programs.map { it.name })
 
         val source = ShaderSource { id, type ->
             when (id.path) {
                 "pack/post.v" -> POST_VSH
                 "pack/normals.f" -> NORMAL_FSH.replace("__TEXEL__", "vec2(${1.0 / w}, ${1.0 / h})")
-                "pack/composite.f" -> LegacyTranslator.fragment(prog)
                 "pack/blit.f" -> BLIT_FSH
                 else -> null
             }
         }
 
-        if (normals == null || builtForW != w || builtForH != h) {
+        if (needsNormals && (normals == null || builtForW != w || builtForH != h)) {
             normals?.close()
             normals = compile(device, source, id("pack/post.v"), id("pack/normals.f"),
                 BindGroupLayout.builder().withUniform("depthtex0", UniformType.COMBINED_IMAGE_SAMPLER).build())
         }
-        if (composite == null) composite = compile(device, source, id("pack/post.v"), id("pack/composite.f"),
-            BindGroupLayout.builder()
-                .withUniform("colortex0", UniformType.COMBINED_IMAGE_SAMPLER)
-                .withUniform("depthtex0", UniformType.COMBINED_IMAGE_SAMPLER)
-                .withUniform("normalsTex", UniformType.COMBINED_IMAGE_SAMPLER)
-                .build())
+        if (screenPrograms.isEmpty()) screenPrograms = programs.map { program ->
+            val samplers = program.samplers.distinct()
+            require(samplers.all(SUPPORTED_SAMPLERS::contains)) {
+                "${program.name}: unsupported samplers ${samplers - SUPPORTED_SAMPLERS}"
+            }
+            val layout = BindGroupLayout.builder().also { builder ->
+                samplers.forEach { builder.withUniform(it, UniformType.COMBINED_IMAGE_SAMPLER) }
+            }.build()
+            val vs = id("pack/${program.name}.v")
+            val fs = id("pack/${program.name}.f")
+            val programSource = ShaderSource { _, type -> when (type) {
+                com.mojang.renderpearl.api.pipeline.ShaderType.VERTEX -> LegacyTranslator.vertex(program)
+                com.mojang.renderpearl.api.pipeline.ShaderType.FRAGMENT -> LegacyTranslator.fragment(program)
+                else -> null
+            } }
+            ScreenProgram(program.name, compile(device, programSource, vs, fs, layout), samplers)
+        }
         if (blit == null) blit = compile(device, source, id("pack/post.v"), id("pack/blit.f"), BindGroupLayouts.IN_SAMPLER)
 
         builtForW = w; builtForH = h
+    }
+
+    private fun samplerView(name: String, colortex0: GpuTextureView): GpuTextureView = when (name) {
+        "colortex0", "gcolor" -> colortex0
+        "depthtex0" -> depthView!!
+        "normalsTex" -> normalView!!
+        else -> error("unsupported sampler '$name'")
     }
 
     private fun compile(
@@ -218,6 +235,14 @@ object PackChain {
 
 
     private fun id(path: String) = Identifier.fromNamespaceAndPath("vertex", path)
+
+    private data class ScreenProgram(
+        val name: String,
+        val pipeline: CompiledRenderPipeline,
+        val samplers: List<String>,
+    )
+
+    private val SUPPORTED_SAMPLERS = setOf("colortex0", "gcolor", "depthtex0", "normalsTex")
 
     private const val POST_VSH = """#version 330
 #extension GL_ARB_separate_shader_objects : require

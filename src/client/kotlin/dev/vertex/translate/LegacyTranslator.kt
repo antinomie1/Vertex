@@ -12,19 +12,7 @@ import dev.vertex.frontend.LoadedProgram
 object LegacyTranslator {
 
     fun vertex(program: LoadedProgram): String {
-        val name = program.varyingName
-            ?: throw IllegalStateException("无 varying，无法套用透传顶点")
-        return """#version 330
-#extension GL_ARB_separate_shader_objects : require
-
-layout(location = 0) out vec2 $name;
-
-void main() {
-    vec2 uv = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2));
-    gl_Position = vec4(uv * vec2(2, 2) - vec2(1, 1), 0.0, 1.0);
-    $name = uv;
-}
-"""
+        return LegacyFullscreenVertexTranslator.translate(program.vertexSource)
     }
 
     fun fragment(program: LoadedProgram): String {

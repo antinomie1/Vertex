@@ -59,6 +59,14 @@ void main() {
     gl_FragData[0] = vec4(o, 1.0);
 }
 """
+    val FSH_2 = """#version 120
+uniform sampler2D colortex0;
+varying vec2 texcoord;
+void main() {
+    vec3 c = texture2D(colortex0, texcoord).rgb;
+    gl_FragData[0] = vec4(pow(c, vec3(0.98)), 1.0);
+}
+"""
 
     fun ensure(dir: Path): Path {
         val root = dir.resolve(DIR_NAME).resolve("shaders")
@@ -68,6 +76,8 @@ void main() {
         // 测试包由本模组生成：每次启动强制覆盖，保证与当前版本一致
         Files.writeString(vsh, VSH)
         Files.writeString(fsh, FSH)
+        Files.writeString(root.resolve("composite1.vsh"), VSH)
+        Files.writeString(root.resolve("composite1.fsh"), FSH_2)
         val tvsh = root.resolve("gbuffers_terrain.vsh")
         val tfsh = root.resolve("gbuffers_terrain.fsh")
         Files.writeString(tvsh, TERRAIN_VSH)
