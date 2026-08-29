@@ -305,7 +305,11 @@ object PackChain {
 
     @JvmStatic
     fun bindTerrainSamplers(pass: RenderPass, sampler: GpuSampler, atlas: GpuTextureView) {
-        pass.setUniform("Sampler0", atlas, sampler)
+        // Minecraft's chunk-layer sampler is linear, but atlas coordinates point at
+        // individual texels.  Nearest filtering keeps tile edges crisp and matches
+        // the vanilla atlas sampler (including without mipmap support).
+        val atlasSampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST)
+        pass.setUniform("Sampler0", atlas, atlasSampler)
         staticByName["noisetex"]?.let { pass.setUniform("noisetex", it.view, it.sampler) }
         bindShadowSamplers(pass, sampler)
         bindUniforms(pass)

@@ -35,6 +35,21 @@ public abstract class LevelRendererTerrainMeshMixin {
         RenderPass pass
     );
 
+    /** Prepare pack uniforms before the frame graph's sky pass consumes them. */
+    @Inject(method = "render", at = @At("HEAD"))
+    private void vertex$beginPackFrame(
+        com.mojang.blaze3d.resource.GraphicsResourceAllocator allocator,
+        boolean renderBlockOutline,
+        net.minecraft.client.renderer.state.level.CameraRenderState camera,
+        com.mojang.renderpearl.api.buffers.GpuBufferSlice fog,
+        org.joml.Vector4f clearColor,
+        boolean renderSky,
+        boolean renderClouds,
+        CallbackInfo ci
+    ) {
+        PackChain.beginFrame();
+    }
+
     @Inject(method = "lambda$addMainPass$0", at = @At("HEAD"))
     private void vertex$runEarlyPackPrograms(
         com.mojang.renderpearl.api.buffers.GpuBufferSlice fog,
