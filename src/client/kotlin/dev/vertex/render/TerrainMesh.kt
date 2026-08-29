@@ -16,7 +16,10 @@ import dev.vertex.core.RuntimeDiagnostics
 import dev.vertex.frontend.PackRuntime
 import dev.vertex.runtime.ProgramFamily
 import dev.vertex.runtime.RenderTier
+import dev.vertex.translate.TerrainRequirementScanner
+import dev.vertex.translate.TerrainRequirements
 import net.minecraft.client.Minecraft
+import net.minecraft.client.model.geom.builders.UVPair
 import net.minecraft.client.renderer.RenderPipelines
 import net.minecraft.client.renderer.chunk.ChunkSectionLayer
 import net.minecraft.resources.Identifier
@@ -34,16 +37,11 @@ import kotlin.jvm.JvmStatic
  * draw time.
  */
 object TerrainMesh {
-    private val customFormat: VertexFormat = VertexFormat.builder(0)
-        .addAttribute("Position", GpuFormat.RGB32_FLOAT)
-        .addAttribute("Color", GpuFormat.RGBA8_UNORM)
-        .addAttribute("UV0", GpuFormat.RG32_FLOAT)
-        .addAttribute("UV1", GpuFormat.RG16_SINT)
-        .addAttribute("UV2", GpuFormat.RG16_SINT)
-        .addAttribute("Normal", GpuFormat.RGBA8_SNORM)
-        .build()
+    @Volatile private var customFormat = format(TerrainRequirements(false, false, false, false))
+    @Volatile private var requirements = TerrainRequirements(false, false, false, false)
 
     private val currentEntityPayload = ThreadLocal<Int>()
+    private val currentMidUv = ThreadLocal<FloatArray>()
     private val shaderId = Identifier.fromNamespaceAndPath("vertex", "terrain_mesh")
     private val opaqueLayers = setOf(ChunkSectionLayer.SOLID, ChunkSectionLayer.CUTOUT)
 
@@ -70,6 +68,8 @@ object TerrainMesh {
             val runDir = Minecraft.getInstance().gameDirectory.toPath()
             val packRoot = PackRuntime.root(runDir)
             val terrainProg = dev.vertex.frontend.PackFrontend.loadTerrain(packRoot, PackRuntime.options())
+            requirements = TerrainRequirementScanner.scan(terrainProg.vertexSource)
+            customFormat = format(requirements)
             val translatedVsh = dev.vertex.translate.LegacyTranslator.terrainVertex(terrainProg)
             val translatedFsh = dev.vertex.translate.LegacyTranslator.terrainFragment(terrainProg)
             val source = shaderSource(translatedVsh, translatedFsh)
@@ -146,10 +146,21 @@ object TerrainMesh {
         quad: net.minecraft.client.resources.model.geometry.BakedQuad
     ) {
         val payload = currentEntityPayload.get()
-        if (payload != null && payload != 0) {
-            instance.setOverlayCoords(payload)
+        if (requirements.entity && payload != null && payload != 0) instance.setOverlayCoords(payload)
+        if (requirements.midTexCoord) {
+            var u = 0f; var v = 0f
+            for (vertex in 0..3) quad.packedUV(vertex).let { packed ->
+                u += UVPair.unpackU(packed); v += UVPair.unpackV(packed)
+            }
+            currentMidUv.set(floatArrayOf(u * .25f, v * .25f))
         }
     }
+
+    @JvmStatic fun fillExtraVertex(consumer: com.mojang.blaze3d.vertex.VertexConsumer) {
+        currentMidUv.get()?.let { consumer.setUv3(it[0], it[1]) }
+    }
+
+    @JvmStatic fun clearQuadPayload() = currentMidUv.remove()
 
 
     @JvmStatic
@@ -222,5 +233,15 @@ object TerrainMesh {
         val cutout: PipelinePair,
         val compiled: IdentityHashMap<RenderPipeline, CompiledRenderPipeline>,
     )
+
+    private fun format(requirements: TerrainRequirements) = VertexFormat.builder(0)
+        .addAttribute("Position", GpuFormat.RGB32_FLOAT)
+        .addAttribute("Color", GpuFormat.RGBA8_UNORM)
+        .addAttribute("UV0", GpuFormat.RG32_FLOAT)
+        .addAttribute("UV1", GpuFormat.RG16_SINT)
+        .addAttribute("UV2", GpuFormat.RG16_SINT)
+        .apply { if (requirements.midTexCoord) addAttribute("UV3", GpuFormat.RG32_FLOAT) }
+        .addAttribute("Normal", GpuFormat.RGBA8_SNORM)
+        .build()
 
 }

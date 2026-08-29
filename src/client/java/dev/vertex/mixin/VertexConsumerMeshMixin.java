@@ -23,4 +23,11 @@ public interface VertexConsumerMeshMixin {
     ) {
         TerrainMesh.applyQuadPayload(instance, quad);
     }
+
+    @Inject(method = "putBlockBakedQuad", at = @At("RETURN"))
+    private void vertex$clearPayload(
+        float x, float y, float z, BakedQuad quad, QuadInstance instance, CallbackInfo ci
+    ) {
+        TerrainMesh.clearQuadPayload();
+    }
 }

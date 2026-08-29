@@ -18,7 +18,8 @@
     "DrawIndirectAccessor",
     "ChunkSectionsToRenderDrawMixin",
     "ModelBlockRendererMeshMixin",
-    "VertexConsumerMeshMixin"
+    "VertexConsumerMeshMixin",
+    "BufferBuilderMeshMixin"
   ],
   "injectors": {
     "defaultRequire": 1

@@ -20,6 +20,46 @@ object LegacyTranslator {
         return LegacyFragmentTranslator.translate(program.fragmentSource, formats.map(ColorFormat::numericType))
     }
     fun terrainVertex(program: LoadedProgram): String {
+        val requirements = TerrainRequirementScanner.scan(program.vertexSource)
+        val varyings = varyingDeclarations(program.vertexSource)
+        var body = program.vertexSource
+            .replace(Regex("""^\s*#(?:version|extension)[^\n]*""", RegexOption.MULTILINE), "")
+            .replace(VARYING, "")
+            .replace(Regex("""\battribute\s+\w+\s+(?:mc_Entity|mc_midTexCoord|at_midBlock|at_tangent|tangent)\s*;"""), "")
+        require(!Regex("""\battribute\b""").containsMatchIn(body)) { "unsupported terrain vertex attribute" }
+        body = body
+            .replace(Regex("""\bgl_ModelViewProjectionMatrix\b"""), "(ProjMat * ModelViewMat)")
+            .replace(Regex("""\bgl_ModelViewMatrix\b"""), "ModelViewMat")
+            .replace(Regex("""\bgl_ProjectionMatrix\b"""), "ProjMat")
+            .replace(Regex("""\bgl_NormalMatrix\b"""), "mat3(ModelViewMat)")
+            .replace(Regex("""\bgl_TextureMatrix\s*\[\s*[01]\s*]"""), "mat4(1.0)")
+            .replace(Regex("""\bgl_MultiTexCoord0\b"""), "vec4(UV0, 0.0, 1.0)")
+            .replace(Regex("""\bgl_MultiTexCoord1\b"""), "vec4(vec2(UV2) / 256.0 + vec2(1.0 / 32.0), 0.0, 1.0)")
+            .replace(Regex("""\bgl_MultiTexCoord2\b"""), "vec4(UV0, 0.0, 1.0)")
+            .replace(Regex("""\bgl_Color\b"""), "(Color * sample_lightmap(Sampler2, UV2))")
+            .replace(Regex("""\bgl_Normal\b"""), "Normal")
+            .replace(Regex("""\bgl_Vertex\b"""), "vec4(pos, 1.0)")
+            .replace(Regex("""\bftransform\s*\(\s*\)"""), "(ProjMat * ModelViewMat * vec4(pos, 1.0))")
+            .replace(Regex("""\bmc_Entity\b"""), "vec4(float(UV1.x / 2 - 1), float(UV1.x & 1), 0.0, 0.0)")
+            .replace(Regex("""\bat_midBlock\b"""), "((fract(Position) - vec3(0.5)) * 64.0)")
+            .replace(Regex("""\bmc_midTexCoord\b"""), "vec4(UV3, 0.0, 1.0)")
+            .replace(Regex("""\bat_tangent\b|\btangent\b"""), "vec4(normalize(cross(abs(Normal.y) > 0.99 ? vec3(1, 0, 0) : vec3(0, 1, 0), Normal)), 1.0)")
+        val main = Regex("""void\s+main\s*\(\s*\)\s*\{""").find(body)
+            ?: error("${program.name}: terrain vertex shader has no main()")
+        body = body.replaceRange(main.range, main.value + """
+    vec3 pos = Position + (ChunkPosition - CameraBlockPos) + CameraOffset;
+    sphericalVertexDistance = fog_spherical_distance(pos);
+    cylindricalVertexDistance = fog_cylindrical_distance(pos);
+    #ifdef MULTIDRAW_TERRAIN
+    float dist = length(pos);
+    chunkVisibility = mix(1.0, ChunkVisibility, clamp((dist - 16.0) / 16.0, 0.0, 1.0));
+    #else
+    chunkVisibility = 1.0;
+    #endif
+""")
+        val outputs = varyings.entries.mapIndexed { index, (name, type) ->
+            "layout(location = ${3 + index}) out $type $name;"
+        }.joinToString("\n")
         return """#version 330
 #extension GL_ARB_separate_shader_objects : require
 
@@ -40,62 +80,38 @@ layout(location = 4) in ivec2 UV2;
 #ifdef MULTIDRAW_TERRAIN
 layout(location = 5) in ivec3 ChunkPosition;
 layout(location = 6) in float ChunkVisibility;
-layout(location = 7) in vec3 Normal;
+layout(location = ${if (requirements.midTexCoord) 8 else 7}) in vec3 Normal;
 #else
-layout(location = 5) in vec3 Normal;
+layout(location = ${if (requirements.midTexCoord) 6 else 5}) in vec3 Normal;
 #endif
-
+${if (requirements.midTexCoord) "#ifdef MULTIDRAW_TERRAIN\nlayout(location = 7) in vec2 UV3;\n#else\nlayout(location = 5) in vec2 UV3;\n#endif" else ""}
 uniform sampler2D Sampler2;
-
 layout(location = 0) out float sphericalVertexDistance;
 layout(location = 1) out float cylindricalVertexDistance;
-layout(location = 2) out vec4 vertexColor;
-layout(location = 3) out vec2 texCoord0;
-layout(location = 4) out float chunkVisibility;
-layout(location = 5) out vec3 meshNormal;
-
-void main() {
-    vec3 pos = Position + (ChunkPosition - CameraBlockPos) + CameraOffset;
-    gl_Position = ProjMat * ModelViewMat * vec4(pos, 1.0);
-
-    sphericalVertexDistance = fog_spherical_distance(pos);
-    cylindricalVertexDistance = fog_cylindrical_distance(pos);
-    vertexColor = Color * sample_lightmap(Sampler2, UV2);
-    texCoord0 = UV0;
-    meshNormal = normalize(Normal);
-
-    const float chunkFullyVisibleRange = 16.0;
-    #ifdef MULTIDRAW_TERRAIN
-    float dist = length(pos);
-    chunkVisibility = mix(1.0, ChunkVisibility, clamp((dist - chunkFullyVisibleRange) / chunkFullyVisibleRange, 0.0, 1.0));
-    #else
-    chunkVisibility = 1.0;
-    #endif
-}
-"""
+layout(location = 2) out float chunkVisibility;
+$outputs
+""" + body.trimStart() + "\n"
     }
 
     fun terrainFragment(program: LoadedProgram): String {
+        val varyings = varyingDeclarations(program.vertexSource)
+        val fragmentVaryings = varyingDeclarations(program.fragmentSource)
+        require(fragmentVaryings.keys.all(varyings::containsKey)) { "terrain fragment references an undeclared varying" }
         var body = program.fragmentSource
-        body = body.replace(Regex("""^#version\s+\d+[^\n]*""", RegexOption.MULTILINE), "")
-        body = body.replace(Regex("""^#extension[^\n]*""", RegexOption.MULTILINE), "")
-        body = body.replace(Regex("""uniform\s+sampler2D\s+(texture|gtexture)\s*;"""), "")
-        body = body.replace(Regex("""uniform\s+sampler2D\s+lightmap\s*;"""), "")
-        body = body.replace(Regex("""varying\s+vec4\s+color\s*;"""), "")
-        body = body.replace(Regex("""varying\s+vec2\s+texcoord\s*;"""), "")
-        body = body.replace(Regex("""varying\s+vec3\s+normal\s*;"""), "")
-        body = body.replace(Regex("""texture2D\s*\(\s*(texture|gtexture)\s*,\s*texcoord\s*\)"""), "((UseRgss == 1 ? sampleRGSS(Sampler0, texCoord0, 1.0f / TextureSize) : sampleNearest(Sampler0, texCoord0, 1.0f / TextureSize)))")
-        body = body.replace(Regex("""texture2D\s*\("""), "texture(")
-        body = body.replace(Regex("""\b(texture|gtexture)\b"""), "Sampler0")
-        body = body.replace(Regex("""\blightmap\b"""), "Sampler2")
-        body = body.replace(Regex("""\bcolor\b"""), "vertexColor")
-        body = body.replace(Regex("""\btexcoord\b"""), "texCoord0")
-        body = body.replace(Regex("""\bnormal\b"""), "meshNormal")
-        body = body.replace(Regex("""gl_FragData\s*\[\s*0\s*\]\s*=\s*([^;]+);"""), "vec4 _outCol = $1;\n    #ifdef ALPHA_CUTOUT\n    if (_outCol.a < ALPHA_CUTOUT) discard;\n    #endif\n    _outCol = mix(FogColor * vec4(1, 1, 1, _outCol.a), _outCol, chunkVisibility);\n    fragColor = apply_fog(_outCol, sphericalVertexDistance, cylindricalVertexDistance, FogEnvironmentalStart, FogEnvironmentalEnd, FogRenderDistanceStart, FogRenderDistanceEnd, FogColor);")
-
+            .replace(Regex("""^#version\s+\d+[^\n]*""", RegexOption.MULTILINE), "")
+            .replace(Regex("""^#extension[^\n]*""", RegexOption.MULTILINE), "")
+            .replace(Regex("""uniform\s+sampler2D\s+(texture|gtexture)\s*;"""), "")
+            .replace(Regex("""uniform\s+sampler2D\s+lightmap\s*;"""), "")
+            .replace(VARYING) { match ->
+                val name = match.groupValues[2]
+                "layout(location = ${3 + varyings.keys.indexOf(name)}) in ${match.groupValues[1]} $name;"
+            }
+            .replace(Regex("""texture2D\s*\("""), "texture(")
+            .replace(Regex("""\b(texture|gtexture)\b(?!\s*\()"""), "Sampler0")
+            .replace(Regex("""\blightmap\b"""), "Sampler2")
+            .replace(Regex("""gl_FragData\s*\[\s*0\s*\]\s*=\s*([^;]+);"""), "vec4 _outCol = $1;\n    #ifdef ALPHA_CUTOUT\n    if (_outCol.a < ALPHA_CUTOUT) discard;\n    #endif\n    _outCol = mix(FogColor * vec4(1, 1, 1, _outCol.a), _outCol, chunkVisibility);\n    fragColor = apply_fog(_outCol, sphericalVertexDistance, cylindricalVertexDistance, FogEnvironmentalStart, FogEnvironmentalEnd, FogRenderDistanceStart, FogRenderDistanceEnd, FogColor);")
         return """#version 330
 #extension GL_ARB_separate_shader_objects : require
-
 #include <minecraft:fog.glsl>
 #include <minecraft:globals.glsl>
 #include <minecraft:texture_sampling.glsl>
@@ -104,17 +120,11 @@ void main() {
 #ifndef MULTIDRAW_TERRAIN
     #include <minecraft:chunksection.glsl>
 #endif
-
 uniform sampler2D Sampler0;
-
 layout(location = 0) in float sphericalVertexDistance;
 layout(location = 1) in float cylindricalVertexDistance;
-layout(location = 2) in vec4 vertexColor;
-layout(location = 3) in vec2 texCoord0;
-layout(location = 4) in float chunkVisibility;
-layout(location = 5) in vec3 meshNormal;
+layout(location = 2) in float chunkVisibility;
 layout(location = 0) out vec4 fragColor;
-
 """ + body.trimStart() + "\n"
     }
 
@@ -175,4 +185,13 @@ layout(location=5) in vec3 Normal;
 #endif
 layout(std140) uniform ShadowUniforms { mat4 vertexShadowMvp; };
 """
+
+    private val VARYING = Regex("""varying\s+(\w+)\s+(\w+)\s*;""")
+
+    private fun varyingDeclarations(source: String): LinkedHashMap<String, String> = LinkedHashMap<String, String>().also { result ->
+        VARYING.findAll(source).forEach { match ->
+            val name = match.groupValues[2]
+            require(result.put(name, match.groupValues[1]) == null) { "duplicate terrain varying '$name'" }
+        }
+    }
 }
