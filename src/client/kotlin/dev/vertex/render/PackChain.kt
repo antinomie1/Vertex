@@ -307,7 +307,18 @@ object PackChain {
     fun bindTerrainSamplers(pass: RenderPass, sampler: GpuSampler, atlas: GpuTextureView) {
         pass.setUniform("Sampler0", atlas, sampler)
         staticByName["noisetex"]?.let { pass.setUniform("noisetex", it.view, it.sampler) }
+        bindShadowSamplers(pass, sampler)
         bindUniforms(pass)
+    }
+
+    private fun bindShadowSamplers(pass: RenderPass, sampler: GpuSampler) {
+        fun bind(name: String, view: GpuTextureView?) {
+            if (view != null) runCatching { pass.setUniform(name, view, sampler) }
+        }
+        bind("shadowtex0", ShadowRenderer.view("shadowtex0"))
+        bind("shadowtex1", ShadowRenderer.view("shadowtex1"))
+        bind("shadowcolor0", ShadowRenderer.view("shadowcolor0"))
+        bind("shadowcolor1", ShadowRenderer.view("shadowcolor1"))
     }
 
     @JvmStatic
@@ -324,10 +335,7 @@ object PackChain {
         bind("depthtex1", depthViews[1] ?: scene)
         bind("depthtex2", depthViews[2] ?: scene)
         bind("normalsTex", normalView)
-        bind("shadowtex0", ShadowRenderer.view("shadowtex0"))
-        bind("shadowtex1", ShadowRenderer.view("shadowtex1"))
-        bind("shadowcolor0", ShadowRenderer.view("shadowcolor0"))
-        bind("shadowcolor1", ShadowRenderer.view("shadowcolor1"))
+        bindShadowSamplers(pass, sampler)
     }
 
     private fun enabled() = !failed &&

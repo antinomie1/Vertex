@@ -44,6 +44,7 @@ object TerrainMesh {
     @Volatile private var requirements = TerrainRequirements(false, false, false, false)
     @Volatile private var separateAo = false
     @Volatile private var noiseSampler = false
+    @Volatile private var packSamplers = emptySet<String>()
 
     private val currentEntityPayload = ThreadLocal<Int>()
     private val currentMidUv = ThreadLocal.withInitial { FloatArray(2) }
@@ -65,6 +66,7 @@ object TerrainMesh {
         requirements = TerrainRequirements(false, false, false, false)
         separateAo = false
         noiseSampler = false
+        packSamplers = emptySet()
         customFormat = format(requirements, separateAo)
         TerrainCommandCache.invalidate()
     }
@@ -89,6 +91,7 @@ object TerrainMesh {
             val terrainProg = dev.vertex.frontend.PackFrontend.loadTerrain(packRoot, PackRuntime.options())
             separateAo = PackSemanticsParser.load(packRoot, PackRuntime.options()).separateAo
             noiseSampler = terrainProg.samplers.contains("noisetex")
+            packSamplers = terrainProg.samplers.toSet()
             requirements = TerrainRequirementScanner.scan(terrainProg.vertexSource)
             customFormat = format(requirements, separateAo)
             val translatedVsh = dev.vertex.translate.LegacyTranslator.terrainVertex(terrainProg, separateAo)
@@ -230,6 +233,10 @@ object TerrainMesh {
             .withBindGroupLayout(BindGroupLayout.builder()
                 .withUniform("Sampler0", UniformType.COMBINED_IMAGE_SAMPLER)
                 .apply { if (noiseSampler) withUniform("noisetex", UniformType.COMBINED_IMAGE_SAMPLER) }
+                .apply {
+                    packSamplers.filterNot { it in setOf("tex", "texture", "gtexture", "lightmap", "noisetex") }
+                        .forEach { withUniform(it, UniformType.COMBINED_IMAGE_SAMPLER) }
+                }
                 .withUniform("VertexPackUniforms", UniformType.UNIFORM_BUFFER)
                 .build())
         if (layer == ChunkSectionLayer.CUTOUT) {

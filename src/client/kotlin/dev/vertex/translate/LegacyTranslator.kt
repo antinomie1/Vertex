@@ -103,10 +103,10 @@ $outputs
         var body = program.fragmentSource
             .replace(Regex("""^#version\s+\d+[^\n]*""", RegexOption.MULTILINE), "")
             .replace(Regex("""^#extension[^\n]*""", RegexOption.MULTILINE), "")
-            .replace(Regex("""uniform\s+[iu]?sampler\w*\s+\w+\s*;"""), "")
+            .replace(Regex("""uniform\s+[iu]?sampler\w*\s+(?:tex|texture|gtexture|lightmap|noisetex)\s*;"""), "")
             .let { replaceVaryingInputs(it, varyings, if (separateAo) 4 else 3) }
             .replace(Regex("""texture2D\s*\("""), "texture(")
-            .replace(Regex("""\b(texture|gtexture)\b(?!\s*\()"""), "Sampler0")
+            .replace(Regex("""\b(?:tex|texture|gtexture)\b(?!\s*\()"""), "Sampler0")
             .replace(Regex("""\blightmap\b"""), "Sampler2")
             .replace(Regex("""\bgl_FragData\s*\[\s*0\s*]"""), "fragColor")
             .replace(Regex("""\bgl_FragColor\b"""), "fragColor")
@@ -462,8 +462,15 @@ layout(std140) uniform ShadowUniforms { mat4 vertexShadowMvp; };
     private val VARYING = Regex("""varying\s+(?:(?:lowp|mediump|highp)\s+)?(\w+)\s+([^;]+);""")
     private val TEXTURE_CALL = Regex("""\b(texture2DProj|texture2DLod|texture2D|texture3D|textureCube)\s*\(""")
 
-    private fun modernizeTextureCalls(source: String) = source.replace(TEXTURE_CALL) {
-        (when (it.groupValues[1]) { "texture2DProj" -> "textureProj"; "texture2DLod" -> "textureLod"; else -> "texture" }) + "("
+    private fun modernizeTextureCalls(source: String): String {
+        val modern = source
+            .replace(Regex("""\bsampler2DShadow\b"""), "sampler2D")
+            .replace(TEXTURE_CALL) {
+                (when (it.groupValues[1]) { "texture2DProj" -> "textureProj"; "texture2DLod" -> "textureLod"; else -> "texture" }) + "("
+            }
+        return if ("shadow2D(" in modern) {
+            "#define shadow2D(s, c) vec4(float((c).z <= texture((s), (c).xy).r))\n$modern"
+        } else modern
     }
 
     private fun replaceVaryingInputs(source: String, varyings: Map<String, String>, base: Int) =

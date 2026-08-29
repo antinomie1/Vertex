@@ -27,4 +27,19 @@ class PackFrontendTest {
         assertEquals(listOf("composite"), programs.map(LoadedProgram::name))
         assertContains(programs.single().vertexSource, "vec3 shared")
     }
+
+    @Test
+    fun `prefers overworld root when dimensions are present`() {
+        val pack = Files.createTempDirectory("vertex-pack-dimension")
+        val shaders = pack.resolve("shaders")
+        shaders.resolve("world-1").createDirectories()
+        shaders.resolve("world0").createDirectories()
+        for (world in listOf("world-1", "world0")) {
+            val marker = if (world == "world0") "overworld" else "nether"
+            shaders.resolve(world).resolve("composite.vsh").writeText("vec3 $marker;\nvoid main() { gl_Position = vec4(0.0); }\n")
+            shaders.resolve(world).resolve("composite.fsh").writeText("void main() { gl_FragColor = vec4(1.0); }\n")
+        }
+        assertEquals(listOf("composite"), PackFrontend.loadScreenChain(pack).map(LoadedProgram::name))
+        assertContains(PackFrontend.loadScreenChain(pack).single().vertexSource, "overworld")
+    }
 }

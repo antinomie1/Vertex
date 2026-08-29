@@ -114,7 +114,11 @@ object PackFrontend {
             children.filter { Files.isDirectory(it) && it.fileName.toString().startsWith("world") }
                 .sorted().toList()
         }
-        return listOf(shaders) + worlds
+        // The client starts before a level is attached, so world0 is the only
+        // safe default for packs that provide dimension-specific shader roots.
+        // Keep the pack-root fallback and all other dimensions available.
+        val overworld = worlds.firstOrNull { it.fileName.toString() == "world0" }
+        return listOfNotNull(overworld, shaders) + worlds.filterNot { it == overworld }
     }
 
     private fun hasPair(sh: Path, stem: String) =
