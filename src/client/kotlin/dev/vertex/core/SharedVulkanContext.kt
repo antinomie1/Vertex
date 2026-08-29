@@ -7,6 +7,7 @@ import dev.vertex.mixin.FrontendGpuDeviceAccessor
 import dev.vertex.mixin.VulkanDeviceAccessor
 import dev.vertex.runtime.CompatibilityProbe
 import dev.vertex.runtime.DeviceCapabilities
+import dev.vertex.runtime.FamilyHealth
 import dev.vertex.runtime.ProgramFamily
 import dev.vertex.runtime.RenderTier
 import dev.vertex.runtime.TierDecision
@@ -18,9 +19,10 @@ data class SharedVulkanContext(
     val device: VkDevice?,
     val gpuName: String,
     val graphicsFamily: Int,
-    val decisions: Map<ProgramFamily, TierDecision>,
+    val health: FamilyHealth,
 ) {
-    fun tier(family: ProgramFamily): RenderTier = decisions.getValue(family).tier
+    val decisions get() = health.snapshot()
+    fun tier(family: ProgramFamily): RenderTier = health.tier(family)
 
     companion object {
         @Volatile private var current: SharedVulkanContext? = null
@@ -61,11 +63,11 @@ data class SharedVulkanContext(
                 device = vulkan?.vkDevice(),
                 gpuName = info.name(),
                 graphicsFamily = vulkan?.graphicsQueue()?.queueFamilyIndex() ?: -1,
-                decisions = TierNegotiator.negotiate(
+                health = FamilyHealth(TierNegotiator.negotiate(
                     caps,
                     compatibility,
                     implementedTier2 = setOf(ProgramFamily.TERRAIN_OPAQUE, ProgramFamily.SCREEN_CHAIN),
-                ),
+                )),
             )
         }
     }

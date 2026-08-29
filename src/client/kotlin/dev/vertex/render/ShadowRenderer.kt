@@ -18,11 +18,14 @@ import com.mojang.renderpearl.api.textures.FilterMode
 import com.mojang.renderpearl.api.textures.GpuTexture
 import com.mojang.renderpearl.api.textures.GpuTextureView
 import dev.vertex.Vertex
+import dev.vertex.core.SharedVulkanContext
 import dev.vertex.frontend.PackFrontend
 import dev.vertex.frontend.PackRuntime
 import dev.vertex.runtime.ShadowCacheState
 import dev.vertex.runtime.ImageAllocation
 import dev.vertex.runtime.ImageClass
+import dev.vertex.runtime.ProgramFamily
+import dev.vertex.runtime.RenderTier
 import dev.vertex.translate.LegacyTranslator
 import net.minecraft.client.Minecraft
 import net.minecraft.client.renderer.RenderPipelines
@@ -95,6 +98,8 @@ object ShadowRenderer {
     }
 
     fun prepare() {
+        if (SharedVulkanContext.attach().tier(ProgramFamily.TERRAIN_OPAQUE) != RenderTier.TIER_2 ||
+            SharedVulkanContext.attach().tier(ProgramFamily.SCREEN_CHAIN) != RenderTier.TIER_2) return
         if (failed || base != null) return
         try {
             discover()

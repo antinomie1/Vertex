@@ -12,6 +12,7 @@ import com.mojang.renderpearl.api.pipeline.ShaderType
 import com.mojang.renderpearl.api.vertex.VertexFormat
 import dev.vertex.Vertex
 import dev.vertex.core.SharedVulkanContext
+import dev.vertex.core.RuntimeDiagnostics
 import dev.vertex.frontend.PackRuntime
 import dev.vertex.runtime.ProgramFamily
 import dev.vertex.runtime.RenderTier
@@ -87,7 +88,7 @@ object TerrainMesh {
             )
         } catch (t: Throwable) {
             prepared = null
-            Vertex.log.warn("[Vertex] terrain mesh surgery unavailable; vanilla terrain retained", t)
+            RuntimeDiagnostics.disable(ProgramFamily.TERRAIN_OPAQUE, "terrain pipeline preparation", t)
         }
     }
 

@@ -3,6 +3,9 @@ package dev.vertex.render
 import com.mojang.blaze3d.systems.RenderSystem
 import dev.vertex.Vertex
 import dev.vertex.core.SharedVulkanContext
+import dev.vertex.core.RuntimeDiagnostics
+import dev.vertex.runtime.ProgramFamily
+import dev.vertex.runtime.RenderTier
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents
 import net.minecraft.client.Minecraft
 
@@ -11,16 +14,16 @@ import net.minecraft.client.Minecraft
  */
 object VertexRenderer {
     private var booted = false
-    private var failed = false
     private var frames = 0L
     fun register() {
         Vertex.log.info("[Vertex] register(): wiring seams")
         LevelRenderEvents.END_MAIN.register { _ ->
-            if (failed) return@register
             try {
                 ensureBoot()
-                PackChain.captureDepth(2)
-                PackChain.draw()
+                if (SharedVulkanContext.attach().tier(ProgramFamily.SCREEN_CHAIN) != RenderTier.TIER_0) {
+                    PackChain.captureDepth(2)
+                    PackChain.draw()
+                }
                 frames++
                 val stopAfter = System.getProperty("vertex.autostop")?.toLongOrNull()
                 if (stopAfter != null && frames >= stopAfter * 60L) {
@@ -31,8 +34,7 @@ object VertexRenderer {
                     Vertex.log.info("[Vertex] alive(level): frame {} on '{}'", frames, SharedVulkanContext.attach().gpuName)
                 }
             } catch (t: Throwable) {
-                failed = true
-                Vertex.log.error("[Vertex] degraded to Tier 0 for this session", t)
+                RuntimeDiagnostics.disable(ProgramFamily.SCREEN_CHAIN, "end-of-world frame seam", t)
             }
         }
     }

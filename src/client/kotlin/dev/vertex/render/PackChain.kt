@@ -27,11 +27,17 @@ import dev.vertex.frontend.PackSemanticsParser
 import dev.vertex.frontend.ColorFormat
 import dev.vertex.mixin.GameRendererProjectionAccessor
 import dev.vertex.mixin.ProjectionMatrixBufferAccessor
+import dev.vertex.core.RuntimeDiagnostics
+import dev.vertex.core.SharedVulkanContext
 import dev.vertex.runtime.ImageAllocation
 import dev.vertex.runtime.ImageClass
 import dev.vertex.runtime.MemoryBudgetGovernor
 import dev.vertex.runtime.UniformHeap
 import dev.vertex.runtime.PerformanceWindow
+import dev.vertex.runtime.PerformanceBaseline
+import dev.vertex.runtime.PerformanceGate
+import dev.vertex.runtime.ProgramFamily
+import dev.vertex.runtime.RenderTier
 import dev.vertex.runtime.RenderScalePolicy
 import dev.vertex.runtime.ScreenPassOptimizer
 import dev.vertex.translate.LegacyTranslator
@@ -112,9 +118,10 @@ object PackChain {
     private val timingArmed = BooleanArray(2)
     private val gpuTimes = PerformanceWindow()
     private var timingsSinceReport = 0
+    private var perfBaselineWritten = false
 
     fun prepare() {
-        if (failed) return
+        if (!enabled()) return
         try {
             val device = RenderSystem.getDevice()
             val main = Minecraft.getInstance().gameRenderer.mainRenderTarget()
@@ -122,13 +129,12 @@ object PackChain {
             ensurePipelines(device)
             dev.vertex.Vertex.log.info("[Vertex] pack pipelines prewarmed ({}x{})", w, h)
         } catch (t: Throwable) {
-            failed = true
-            dev.vertex.Vertex.log.error("[Vertex] pack prewarm failed; Tier 0 chain disabled", t)
+            disable("screen pipeline prewarm", t)
         }
     }
 
     fun draw() {
-        if (failed) return
+        if (!enabled()) return
         try {
             if (!frameReady) beginFrame()
             if (failed || !frameReady) return
@@ -179,14 +185,13 @@ object PackChain {
             dbgFrame++
             frameReady = false
         } catch (t: Throwable) {
-            failed = true
-            dev.vertex.Vertex.log.error("[Vertex] pack chain disabled for this session", t)
+            disable("screen chain execution", t)
         }
     }
 
     @JvmStatic
     fun beginFrame() {
-        if (failed || frameReady) return
+        if (!enabled() || frameReady) return
         try {
             val device = RenderSystem.getDevice()
             val main = Minecraft.getInstance().gameRenderer.mainRenderTarget()
@@ -208,8 +213,7 @@ object PackChain {
             executePrograms(encoder, sampler, scene, earlyPrograms)
             frameReady = true
         } catch (t: Throwable) {
-            failed = true
-            dev.vertex.Vertex.log.error("[Vertex] early pack programs disabled the pack chain", t)
+            disable("early screen programs", t)
         }
     }
 
@@ -238,7 +242,7 @@ object PackChain {
 
     @JvmStatic
     fun captureDepth(id: Int) {
-        if (failed || id !in neededDepths) return
+        if (!enabled() || id !in neededDepths) return
         try {
             val device = RenderSystem.getDevice()
             val main = Minecraft.getInstance().gameRenderer.mainRenderTarget()
@@ -249,13 +253,15 @@ object PackChain {
                 dev.vertex.Vertex.log.info("[Vertex] depthtex{} capture armed", id)
             }
         } catch (t: Throwable) {
-            failed = true
-            dev.vertex.Vertex.log.error("[Vertex] depthtex$id capture disabled the pack chain", t)
+            disable("depthtex$id capture", t)
         }
     }
 
     @JvmStatic
     fun needsDepth(id: Int) = id in neededDepths
+
+    private fun enabled() = !failed &&
+        SharedVulkanContext.attach().tier(ProgramFamily.SCREEN_CHAIN) == RenderTier.TIER_2
 
 
     private fun debugColorReadback(device: com.mojang.renderpearl.api.device.GpuDevice, tex: GpuTexture, tag: String) {
@@ -521,7 +527,40 @@ object PackChain {
             timingsSinceReport = 0
             val p = gpuTimes.snapshot()
             dev.vertex.Vertex.log.info("[Vertex] pack GPU time: p50={} us p99={} us (n={})", p.p50Micros, p.p99Micros, p.samples)
+            checkPerformance(p)
         }
+    }
+
+    private fun checkPerformance(current: dev.vertex.runtime.Percentiles) {
+        val configured = System.getProperty("vertex.perfBaseline")?.takeIf(String::isNotBlank) ?: return
+        val raw = Path.of(configured)
+        val path = if (raw.isAbsolute) raw else Minecraft.getInstance().gameDirectory.toPath().resolve(raw)
+        if (System.getProperty("vertex.perfUpdateBaseline") == "true") {
+            if (!perfBaselineWritten) {
+                path.parent?.let(Files::createDirectories)
+                Files.writeString(path, PerformanceBaseline(current.p50Micros, current.p99Micros).encode())
+                perfBaselineWritten = true
+                dev.vertex.Vertex.log.info("[Vertex] performance baseline updated: {}", path)
+            }
+            return
+        }
+        val baseline = PerformanceBaseline.decode(Files.readString(path))
+            ?: error("invalid performance baseline: $path")
+        PerformanceGate.compare(
+            baseline,
+            current,
+            System.getProperty("vertex.perfThresholdPercent")?.toDoubleOrNull() ?: 3.0,
+        )?.let { regression ->
+            val message = "GPU performance regression: p50=${"%.2f".format(regression.p50Percent)}%, " +
+                "p99=${"%.2f".format(regression.p99Percent)}%"
+            if (System.getProperty("vertex.perfGate") == "true") error(message)
+            dev.vertex.Vertex.log.warn("[Vertex] {}", message)
+        }
+    }
+
+    private fun disable(stage: String, failure: Throwable) {
+        failed = true
+        RuntimeDiagnostics.disable(ProgramFamily.SCREEN_CHAIN, stage, failure)
     }
 
     private fun updateUniforms(encoder: CommandEncoder) {

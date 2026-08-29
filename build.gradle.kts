@@ -76,6 +76,9 @@ tasks.withType<JavaExec>().configureEach {
         if (dbg.isPresent) jvmArgs("-Dvertex.debugReadback=" + dbg.get())
         val perfLog = providers.gradleProperty("vertex.perfLogFrames")
         if (perfLog.isPresent) jvmArgs("-Dvertex.perfLogFrames=" + perfLog.get())
+        listOf("perfBaseline", "perfUpdateBaseline", "perfThresholdPercent", "perfGate").forEach { key ->
+            providers.gradleProperty("vertex.$key").orNull?.let { jvmArgs("-Dvertex.$key=$it") }
+        }
         val pack = providers.gradleProperty("vertex.pack")
         if (pack.isPresent) jvmArgs("-Dvertex.pack=" + pack.get())
         val options = providers.gradleProperty("vertex.options")
