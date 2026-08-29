@@ -70,7 +70,11 @@ object PackFrontend {
      * here instead of making the renderer probe the filesystem on every draw.
      */
     fun loadDynamic(packRoot: Path, options: Map<String, String> = emptyMap()): LoadedProgram? {
-        return loadPair(packRoot, listOf("gbuffers_entities", "gbuffers_entity", "gbuffers_hand", "gbuffers_textured_lit"), options)
+        return loadPair(
+            packRoot,
+            listOf("gbuffers_entities", "gbuffers_entity", "gbuffers_hand", "gbuffers_textured_lit", "gbuffers_textured", "gbuffers_basic"),
+            options,
+        )
     }
 
     fun loadParticle(packRoot: Path, options: Map<String, String> = emptyMap()): LoadedProgram? =

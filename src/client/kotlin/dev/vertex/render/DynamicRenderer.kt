@@ -28,6 +28,7 @@ import java.util.IdentityHashMap
  */
 object DynamicRenderer {
     private val entityShaderId = Identifier.fromNamespaceAndPath("vertex", "dynamic_entities")
+    private val blockShaderId = Identifier.fromNamespaceAndPath("vertex", "dynamic_blocks")
     private val skyShaderId = Identifier.fromNamespaceAndPath("vertex", "dynamic_sky")
     private val starShaderId = Identifier.fromNamespaceAndPath("vertex", "dynamic_stars")
     private val particleShaderId = Identifier.fromNamespaceAndPath("vertex", "dynamic_particles")
@@ -52,6 +53,11 @@ object DynamicRenderer {
         RenderPipelines.ITEM_TRANSLUCENT,
         RenderPipelines.ITEM_TRANSLUCENT_GLINT,
         RenderPipelines.ITEM_TRANSLUCENT_GLINT_SPECIAL,
+    )
+    private val blockPipelines = listOf(
+        RenderPipelines.SOLID_BLOCK,
+        RenderPipelines.CUTOUT_BLOCK,
+        RenderPipelines.TRANSLUCENT_BLOCK,
     )
     @JvmStatic
     @Synchronized
@@ -84,6 +90,22 @@ object DynamicRenderer {
                             if (failures == 0) "" else "; skipped=$failures",
                         )
                     } else disable("dynamic shader pair rejected by RenderPearl")
+                    runCatching {
+                        val blockFailures = compileGroup(
+                            gpu,
+                            blockPipelines,
+                            blockShaderId,
+                            shaderSource(blockShaderId, LegacyTranslator.blockVertex(dynamic), LegacyTranslator.dynamicFragment(dynamic)),
+                            ::blockCompatible,
+                        )
+                        if (blockPipelines.any(pipelines::containsKey)) {
+                            Vertex.log.info(
+                                "[Vertex] block render bridge armed: {} pipelines{}",
+                                blockPipelines.count(pipelines::containsKey),
+                                if (blockFailures == 0) "" else "; skipped=$blockFailures",
+                            )
+                        }
+                    }.onFailure { Vertex.log.debug("[Vertex] block shader rejected; retaining vanilla path", it) }
                 }.onFailure { disable("dynamic pipeline preparation", it) }
             }
             compileOptionalSceneFamilies(gpu, root)
@@ -121,6 +143,12 @@ object DynamicRenderer {
         val format = pipeline.getVertexFormatBinding(0) ?: return false
         return format.contains("Position") && format.contains("Color") &&
             format.contains("UV0") && format.contains("Normal")
+    }
+
+    private fun blockCompatible(pipeline: RenderPipeline): Boolean {
+        val format = pipeline.getVertexFormatBinding(0) ?: return false
+        return format.contains("Position") && format.contains("Color") &&
+            format.contains("UV0") && format.contains("UV2") && !format.contains("Normal")
     }
 
     private fun clone(original: RenderPipeline, shaderId: Identifier): RenderPipeline {

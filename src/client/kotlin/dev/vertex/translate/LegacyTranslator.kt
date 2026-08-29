@@ -182,6 +182,52 @@ $outputs
 """ + body.trimStart()
     }
 
+    /** Block/textured-lit variant using the BLOCK vertex ABI (no UV1 or normal). */
+    fun blockVertex(program: LoadedProgram): String {
+        val varyings = varyingDeclarations(program.vertexSource)
+        var body = program.vertexSource
+            .replace(Regex("""^\s*#(?:version|extension)[^\n]*""", RegexOption.MULTILINE), "")
+            .replace(VARYING, "")
+            .replace(Regex("""\battribute\s+(?:(?:lowp|mediump|highp)\s+)?\w+\s+\w+\s*;"""), "")
+            .replace(Regex("""\bgl_ModelViewProjectionMatrix\b"""), "(ProjMat * ModelViewMat)")
+            .replace(Regex("""\bgl_ModelViewMatrix\b"""), "ModelViewMat")
+            .replace(Regex("""\bgl_ProjectionMatrix\b"""), "ProjMat")
+            .replace(Regex("""\bgl_TextureMatrix\s*\[\s*[01]\s*]"""), "mat4(1.0)")
+            .replace(Regex("""\bgl_MultiTexCoord0\b"""), "vec4(UV0, 0.0, 1.0)")
+            .replace(Regex("""\bgl_MultiTexCoord[12]\b"""), "vec4(UV2, 0.0, 1.0)")
+            .replace(Regex("""\bgl_Color\b"""), "Color")
+            .replace(Regex("""\bgl_Vertex\b"""), "vec4(Position, 1.0)")
+            .replace(Regex("""\bftransform\s*\(\s*\)"""), "(ProjMat * ModelViewMat * vec4(Position, 1.0))")
+            .let(::modernizeTextureCalls)
+        require(!Regex("""\bgl_Normal(?:Matrix)?\b""").containsMatchIn(body)) {
+            "${program.name}: block vertex shader references unavailable normal attributes"
+        }
+        val main = Regex("""void\s+main\s*\(\s*\)\s*\{""").find(body)
+            ?: error("${program.name}: block vertex shader has no main()")
+        body = body.replaceRange(main.range, main.value + """
+    sphericalVertexDistance = fog_spherical_distance(Position);
+    cylindricalVertexDistance = fog_cylindrical_distance(Position);
+""")
+        val outputs = varyings.entries.mapIndexed { index, (name, type) ->
+            "layout(location = ${2 + index}) out $type $name;"
+        }.joinToString("\n")
+        return """#version 330
+#extension GL_ARB_separate_shader_objects : require
+#include <minecraft:fog.glsl>
+#include <minecraft:dynamictransforms.glsl>
+#include <minecraft:projection.glsl>
+#include <minecraft:sample_lightmap.glsl>
+layout(location = 0) in vec3 Position;
+layout(location = 1) in vec4 Color;
+layout(location = 2) in vec2 UV0;
+layout(location = 3) in ivec2 UV2;
+uniform sampler2D Sampler2;
+layout(location = 0) out float sphericalVertexDistance;
+layout(location = 1) out float cylindricalVertexDistance;
+$outputs
+""" + body.trimStart()
+    }
+
     /** Translates the fragment half while preserving the pack's varying names. */
     fun dynamicFragment(program: LoadedProgram): String {
         val varyings = varyingDeclarations(program.vertexSource)

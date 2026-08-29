@@ -51,4 +51,11 @@ void main() { gl_FragColor = texture2D(texture, texcoord); }
         assertContains(vertex, "layout(location = 3) in ivec2 UV2;")
         assertContains(fragment, "uniform sampler2D Sampler0;")
     }
+
+    @Test
+    fun `block stages expose the compact block ABI`() {
+        val vertex = LegacyTranslator.blockVertex(particle)
+        assertContains(vertex, "layout(location = 3) in ivec2 UV2;")
+        assertFalse(vertex.contains("layout(location = 3) in ivec2 UV1;"))
+    }
 }
