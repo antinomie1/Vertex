@@ -64,7 +64,9 @@ uniform sampler2D colortex0;
 varying vec2 texcoord;
 void main() {
     vec3 c = texture2D(colortex0, texcoord).rgb;
+    /* DRAWBUFFERS:01 */
     gl_FragData[0] = vec4(pow(c, vec3(0.98)), 1.0);
+    gl_FragData[1] = vec4(c, 1.0);
 }
 """
 

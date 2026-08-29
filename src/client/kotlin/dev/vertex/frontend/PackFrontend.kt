@@ -13,6 +13,7 @@ data class LoadedProgram(
     val fragmentSource: String,
     val varyingName: String?,
     val samplers: List<String>,
+    val outputs: List<Int>,
 )
 
 object PackFrontend {
@@ -36,7 +37,9 @@ object PackFrontend {
 
     private fun load(sh: Path, name: String, options: Map<String, String>): LoadedProgram {
         val vsh = ShaderPreprocessor(listOf(sh), options).process(sh.resolve("$name.vsh"))
-        val fsh = ShaderPreprocessor(listOf(sh), options).process(sh.resolve("$name.fsh"))
+        val fragmentFile = sh.resolve("$name.fsh")
+        val outputs = outputs(Files.readString(fragmentFile))
+        val fsh = ShaderPreprocessor(listOf(sh), options).process(fragmentFile)
 
         val varying = Regex("""varying\s+\w+\s+(\w+)\s*;""").findAll(vsh)
             .map { it.groupValues[1] }.firstOrNull()
@@ -44,7 +47,7 @@ object PackFrontend {
         val samplers = SAMPLER.findAll(fsh)
             .map { it.groupValues[1] }.toList()
 
-        return LoadedProgram(name, vsh, fsh, varying, samplers)
+        return LoadedProgram(name, vsh, fsh, varying, samplers, outputs)
     }
 
     fun loadTerrain(packRoot: Path, options: Map<String, String> = emptyMap()): LoadedProgram {
@@ -55,11 +58,24 @@ object PackFrontend {
         val fsh = if (Files.isRegularFile(fshFile)) ShaderPreprocessor(listOf(sh), options).process(fshFile) else SamplePack.TERRAIN_FSH
         val samplers = SAMPLER.findAll(fsh)
             .map { it.groupValues[1] }.toList()
-        return LoadedProgram("gbuffers_terrain", vsh, fsh, null, samplers)
+        return LoadedProgram("gbuffers_terrain", vsh, fsh, null, samplers, outputs(fsh))
+    }
+
+    private fun outputs(source: String): List<Int> {
+        val targets = RENDER_TARGETS.find(source)?.groupValues?.get(1)?.split(',')
+            ?.map(String::trim)?.map(String::toInt)
+            ?: DRAW_BUFFERS.find(source)?.groupValues?.get(1)?.map { it.digitToInt(16) }
+            ?: listOf(0)
+        require(targets.isNotEmpty() && targets.distinct().size == targets.size && targets.all { it in 0..15 }) {
+            "invalid DRAWBUFFERS/RENDERTARGETS declaration: $targets"
+        }
+        return targets
     }
 
     private val SAMPLER = Regex("""uniform\s+[iu]?sampler\w*\s+(\w+)\s*;""")
     private val SCREEN_PROGRAM = Regex("""(?:deferred\d*|composite\d*|final)""")
+    private val DRAW_BUFFERS = Regex("""DRAWBUFFERS\s*:\s*([0-9A-Fa-f]+)""")
+    private val RENDER_TARGETS = Regex("""RENDERTARGETS\s*:\s*([0-9, ]+)""")
     private val SCREEN_ORDER = compareBy<String>({
         when { it.startsWith("deferred") -> 0; it.startsWith("composite") -> 1; else -> 2 }
     }, { it.filter(Char::isDigit).toIntOrNull() ?: 0 })
