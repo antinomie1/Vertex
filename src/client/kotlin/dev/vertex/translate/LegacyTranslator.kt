@@ -28,22 +28,7 @@ void main() {
     }
 
     fun fragment(program: LoadedProgram): String {
-        var s = program.fragmentSource
-
-        // 剥离原头部（#version 必须首行，统一由我们重组）
-        s = s.replace(Regex("""^#version\s+\d+[^\n]*""", RegexOption.MULTILINE), "")
-        s = s.replace(Regex("""^#extension[^\n]*""", RegexOption.MULTILINE), "")
-        // varying → in（带 location 由规则表统一补）
-        s = s.replace(Regex("""varying\s+(\w+)\s+(\w+)\s*;"""), "layout(location = 0) in $1 $2;")
-        // 采样器补 location 不需要；texture2D → texture
-        s = s.replace(Regex("""texture2D\s*\(""") , "texture(")
-        // gl_FragData[n] = expr → fragColor = expr（v0 仅支持 n==0）
-        if (Regex("""gl_FragData\s*\[\s*[1-9]""").containsMatchIn(s))
-            throw IllegalStateException("v0 仅支持 DRAWBUFFERS 单目标（gl_FragData[0]）")
-        s = s.replace(Regex("""gl_FragData\s*\[\s*0\s*\]"""), "fragColor")
-        if (!s.contains("fragColor")) throw IllegalStateException("未找到片元输出（gl_FragData[0]/fragColor）")
-        val header = "#version 330\n#extension GL_ARB_separate_shader_objects : require\n"
-        return header + "layout(location = 0) out vec4 fragColor;\n" + s.trimStart()
+        return LegacyFragmentTranslator.translate(program.fragmentSource)
     }
     fun terrainVertex(program: LoadedProgram): String {
         return """#version 330
