@@ -40,4 +40,16 @@ class TerrainTranslatorTest {
         )
         assertContains(LegacyTranslator.terrainFragment(program), "textureProj(Sampler0")
     }
+
+    @Test fun `keeps shadow texture calls while rebinding legacy sampler`() {
+        val program = LoadedProgram(
+            "shadow",
+            "#version 120\nvoid main() { gl_Position = ftransform(); }",
+            "#version 120\nuniform sampler2D texture; void main() { gl_FragColor = texture(texture, vec2(0.5)); }",
+            null, emptyList(), listOf(0), emptySet(),
+        )
+        val fragment = LegacyTranslator.shadowFragment(program)
+        assertContains(fragment, "texture(Sampler0, vec2(0.5))")
+        assertFalse(fragment.contains("Sampler0(Sampler0"))
+    }
 }

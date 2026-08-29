@@ -3,6 +3,7 @@ package dev.vertex.core
 import com.mojang.blaze3d.systems.RenderSystem
 import com.mojang.renderpearl.backend.vulkan.VulkanDevice
 import com.mojang.renderpearl.frontend.FrontendGpuDevice
+import dev.vertex.Vertex
 import dev.vertex.mixin.FrontendGpuDeviceAccessor
 import dev.vertex.mixin.VulkanDeviceAccessor
 import dev.vertex.runtime.CompatibilityProbe
@@ -10,6 +11,7 @@ import dev.vertex.runtime.DeviceCapabilities
 import dev.vertex.runtime.FamilyHealth
 import dev.vertex.runtime.ProgramFamily
 import dev.vertex.runtime.RenderTier
+import dev.vertex.runtime.RuntimeCompatibility
 import dev.vertex.runtime.TierDecision
 import dev.vertex.runtime.TierNegotiator
 import net.fabricmc.loader.api.FabricLoader
@@ -42,6 +44,8 @@ data class SharedVulkanContext(
             }.orEmpty()
             val info = frontend.getDeviceInfo()
             val loader = FabricLoader.getInstance()
+            val runtime = RuntimeCompatibility.check(loader.rawGameVersion, Runtime.version().feature())
+            if (!runtime.compatible) Vertex.log.warn("[Vertex] runtime compatibility failed; forcing Tier 0: {}", runtime.reason)
             val sodium = loader.isModLoaded("sodium") || loader.isModLoaded("embeddium")
             val compatibility = CompatibilityProbe(
                 sodiumTerrainConflict = sodium,
@@ -58,6 +62,7 @@ data class SharedVulkanContext(
                 multiDrawIndirectCount = "drawIndirectCount" in featureNames,
                 dynamicRendering = "dynamicRendering" in featureNames,
                 synchronization2 = "synchronization2" in featureNames,
+                runtimeCompatible = runtime.compatible,
             )
             return SharedVulkanContext(
                 device = vulkan?.vkDevice(),

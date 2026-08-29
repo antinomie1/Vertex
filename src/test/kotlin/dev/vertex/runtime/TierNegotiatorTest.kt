@@ -35,4 +35,11 @@ class TierNegotiatorTest {
         assertEquals(RenderTier.TIER_2, decisions.getValue(ProgramFamily.TERRAIN_OPAQUE).tier)
         assertEquals(RenderTier.TIER_1, decisions.getValue(ProgramFamily.HAND).tier)
     }
+
+    @Test
+    fun `runtime compatibility failure is a safe tier zero fallback`() {
+        val decisions = TierNegotiator.negotiate(full.copy(runtimeCompatible = false))
+        assertTrue(decisions.values.all { it.tier == RenderTier.TIER_0 })
+        assertTrue(decisions.values.all { "runtime compatibility" in it.reason })
+    }
 }

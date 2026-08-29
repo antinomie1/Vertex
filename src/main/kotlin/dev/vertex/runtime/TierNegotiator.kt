@@ -22,9 +22,10 @@ data class DeviceCapabilities(
     val multiDrawIndirectCount: Boolean,
     val dynamicRendering: Boolean,
     val synchronization2: Boolean,
+    val runtimeCompatible: Boolean = true,
 ) {
     val supportsTier2: Boolean
-        get() = deviceHookAvailable && descriptorIndexing && updateAfterBind &&
+        get() = runtimeCompatible && deviceHookAvailable && descriptorIndexing && updateAfterBind &&
             timelineSemaphore && multiDrawIndirect && multiDrawIndirectCount &&
             dynamicRendering && synchronization2
 }
@@ -84,5 +85,6 @@ object TierNegotiator {
         if (!c.multiDrawIndirectCount) add("multi-draw indirect count")
         if (!c.dynamicRendering) add("dynamic rendering")
         if (!c.synchronization2) add("synchronization2")
+        if (!c.runtimeCompatible) add("runtime compatibility")
     }
 }

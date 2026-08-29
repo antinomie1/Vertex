@@ -160,7 +160,8 @@ layout(location = 0) out vec4 fragColor;
             .replace(Regex("""\bvarying\s+(?:(?:lowp|mediump|highp)\s+)?(\w+)\s+(\w+)\s*;""")) {
                 "layout(location = ${location++}) in ${it.groupValues[1]} ${it.groupValues[2]};"
             }
-            .replace(Regex("""\b(?:texture|gtexture)\b"""), "Sampler0")
+            // Replace only the legacy sampler identifier; keep modern texture(...) calls intact.
+            .replace(Regex("""\b(?:texture|gtexture)\b(?!\s*\()"""), "Sampler0")
             .let(::modernizeTextureCalls)
             .replace(Regex("""\bgl_FragData\s*\[\s*0\s*]"""), "shadowColor")
             .replace(Regex("""\bgl_FragColor\b"""), "shadowColor")
