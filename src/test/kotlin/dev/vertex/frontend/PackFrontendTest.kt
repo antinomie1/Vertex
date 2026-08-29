@@ -42,4 +42,19 @@ class PackFrontendTest {
         assertEquals(listOf("composite"), PackFrontend.loadScreenChain(pack).map(LoadedProgram::name))
         assertContains(PackFrontend.loadScreenChain(pack).single().vertexSource, "overworld")
     }
+
+    @Test
+    fun `reads drawbuffers from included screen program`() {
+        val pack = Files.createTempDirectory("vertex-pack-drawbuffers")
+        val shaders = pack.resolve("shaders")
+        val program = shaders.resolve("program")
+        program.createDirectories()
+        shaders.resolve("composite.vsh").writeText("#version 120\nvoid main() { gl_Position = ftransform(); }\n")
+        shaders.resolve("composite.fsh").writeText("#version 120\n#include \"/program/composite.glsl\"\n")
+        program.resolve("composite.glsl").writeText(
+            "void main() { /* DRAWBUFFERS:01 */ gl_FragData[0] = vec4(1.0); gl_FragData[1] = vec4(0.0); }\n",
+        )
+
+        assertEquals(listOf(0, 1), PackFrontend.loadScreenChain(pack).single().outputs)
+    }
 }

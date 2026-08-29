@@ -881,7 +881,10 @@ object PackChain {
     private data class TextureFilter(val blur: Boolean, val clamp: Boolean)
 
     private fun gpuFormat(format: ColorFormat): GpuFormat = when (format) {
-        ColorFormat.R8 -> GpuFormat.R8_UNORM; ColorFormat.RG8 -> GpuFormat.RG8_UNORM; ColorFormat.RGB8 -> GpuFormat.RGB8_UNORM; ColorFormat.RGBA8 -> GpuFormat.RGBA8_UNORM
+        ColorFormat.R8 -> GpuFormat.R8_UNORM; ColorFormat.RG8 -> GpuFormat.RG8_UNORM
+        // Vulkan has no portable three-component color-attachment format. Keep
+        // the pack's RGB semantics while using the widely supported RGBA target.
+        ColorFormat.RGB8 -> GpuFormat.RGBA8_UNORM; ColorFormat.RGBA8 -> GpuFormat.RGBA8_UNORM
         ColorFormat.R8_SNORM -> GpuFormat.R8_SNORM; ColorFormat.RG8_SNORM -> GpuFormat.RG8_SNORM; ColorFormat.RGB8_SNORM -> GpuFormat.RGB8_SNORM; ColorFormat.RGBA8_SNORM -> GpuFormat.RGBA8_SNORM
         ColorFormat.R16 -> GpuFormat.R16_UNORM; ColorFormat.RG16 -> GpuFormat.RG16_UNORM; ColorFormat.RGB16 -> GpuFormat.RGB16_UNORM; ColorFormat.RGBA16 -> GpuFormat.RGBA16_UNORM
         ColorFormat.R16_SNORM -> GpuFormat.R16_SNORM; ColorFormat.RG16_SNORM -> GpuFormat.RG16_SNORM; ColorFormat.RGB16_SNORM -> GpuFormat.RGB16_SNORM; ColorFormat.RGBA16_SNORM -> GpuFormat.RGBA16_SNORM

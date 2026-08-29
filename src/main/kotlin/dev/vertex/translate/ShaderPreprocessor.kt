@@ -112,7 +112,16 @@ class ShaderPreprocessor(
             when {
                 block && c == '*' && next == '/' -> { out.append("  "); block = false; index += 2 }
                 block -> { out.append(if (c == '\n') '\n' else ' '); index++ }
-                c == '/' && next == '*' -> { out.append("  "); block = true; index += 2 }
+                c == '/' && next == '*' -> {
+                    val end = source.indexOf("*/", index + 2)
+                    val comment = if (end >= 0) source.substring(index + 2, end) else ""
+                    if (end >= 0 && DIRECTIVE_COMMENT.containsMatchIn(comment)) {
+                        out.append(source, index, end + 2)
+                        index = end + 2
+                    } else {
+                        out.append("  "); block = true; index += 2
+                    }
+                }
                 c == '/' && next == '/' -> {
                     while (index < source.length && source[index] != '\n') { out.append(' '); index++ }
                 }
@@ -132,6 +141,7 @@ class ShaderPreprocessor(
         private val INCLUDE = Regex("""[<\"]([^>\"]+)[>\"]""")
         private val DEFINE = Regex("""([A-Za-z_]\w*)(\([^)]*\))?(?:\s+(.*))?""")
         private val IDENT = Regex("""\b[A-Za-z_]\w*\b""")
+        private val DIRECTIVE_COMMENT = Regex("""\s*(?:DRAWBUFFERS|RENDERTARGETS)\s*:""")
     }
 }
 

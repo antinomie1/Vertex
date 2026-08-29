@@ -41,8 +41,10 @@ object PackFrontend {
     private fun load(sh: Path, name: String, options: Map<String, String>): LoadedProgram {
         val vsh = ShaderPreprocessor(includeRoots(sh), options).process(sh.resolve("$name.vsh"))
         val fragmentFile = sh.resolve("$name.fsh")
-        val outputs = outputs(Files.readString(fragmentFile))
         val fsh = ShaderPreprocessor(includeRoots(sh), options).process(fragmentFile)
+        // DRAWBUFFERS/RENDERTARGETS usually live in an included program file;
+        // parse the expanded source rather than the tiny wrapper file.
+        val outputs = outputs(fsh)
 
         val varying = Regex("""varying\s+\w+\s+(\w+)\s*;""").findAll(vsh)
             .map { it.groupValues[1] }.firstOrNull()
