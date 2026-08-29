@@ -41,8 +41,9 @@ object PackChain {
     private var normals: CompiledRenderPipeline? = null
     private var tempTex: GpuTexture? = null
     private var tempView: GpuTextureView? = null
-    private var depthTex: GpuTexture? = null
-    private var depthView: GpuTextureView? = null
+    private val depthTextures = arrayOfNulls<GpuTexture>(3)
+    private val depthViews = arrayOfNulls<GpuTextureView>(3)
+    private val depthCaptured = BooleanArray(3)
     private var normalTex: GpuTexture? = null
     private var normalView: GpuTextureView? = null
     private var w = 0
@@ -52,6 +53,7 @@ object PackChain {
     private var failed = false
     private var dbgFrame = 0L
     private var needsNormals = false
+    private var neededDepths = emptySet<Int>()
     private var activeColors = emptySet<Int>()
     private var colorFormats = List(16) { GpuFormat.RGBA8_UNORM }
     private var colorClears = List<Vector4f?>(16) { Vector4f() }
@@ -79,7 +81,6 @@ object PackChain {
             val device = RenderSystem.getDevice()
             val main = Minecraft.getInstance().gameRenderer.mainRenderTarget()
             val sceneView = main.colorTextureView ?: return
-            val mainDepth = main.depthTexture ?: return
             ensureSize(device, main.width, main.height)
             ensurePipelines(device)
 
@@ -90,11 +91,10 @@ object PackChain {
                 debugColorReadback(device, main.colorTexture!!, "a-scene-in")
             }
 
-            val needsDepth = needsNormals || screenPrograms.any { "depthtex0" in it.samplers }
-            if (needsDepth) encoder.copyTextureToTexture(mainDepth, depthTex!!, 0, 0, 0, 0, 0, w, h)
+            if (0 in neededDepths) encoder.copyTextureToTexture(main.depthTexture ?: return, depthTextures[0]!!, 0, 0, 0, 0, 0, w, h)
             if (needsNormals) pass(encoder, "vertex-pack-normals", normalView!!) { rp ->
                 rp.setPipeline(normals!!)
-                rp.setUniform("depthtex0", depthView!!, sampler)
+                rp.setUniform("depthtex0", depthViews[0]!!, sampler)
             }
 
             for ((id, pair) in extraTextures) colorClears[id]?.let { color ->
@@ -134,6 +134,29 @@ object PackChain {
             dev.vertex.Vertex.log.error("[Vertex] pack chain disabled for this session", t)
         }
     }
+
+    @JvmStatic
+    fun captureDepth(id: Int) {
+        if (failed || id !in neededDepths) return
+        try {
+            val device = RenderSystem.getDevice()
+            val main = Minecraft.getInstance().gameRenderer.mainRenderTarget()
+            ensureSize(device, main.width, main.height)
+            device.createCommandEncoder().copyTextureToTexture(
+                main.depthTexture ?: return, depthTextures[id]!!, 0, 0, 0, 0, 0, w, h,
+            )
+            if (!depthCaptured[id]) {
+                depthCaptured[id] = true
+                dev.vertex.Vertex.log.info("[Vertex] depthtex{} capture armed", id)
+            }
+        } catch (t: Throwable) {
+            failed = true
+            dev.vertex.Vertex.log.error("[Vertex] depthtex$id capture disabled the pack chain", t)
+        }
+    }
+
+    @JvmStatic
+    fun needsDepth(id: Int) = id in neededDepths
 
 
     private fun debugColorReadback(device: com.mojang.renderpearl.api.device.GpuDevice, tex: GpuTexture, tag: String) {
@@ -191,7 +214,9 @@ object PackChain {
 
     private fun ensureSize(device: com.mojang.renderpearl.api.device.GpuDevice, width: Int, height: Int) {
         if (normalView != null && w == width && h == height) return
-        listOf(tempView to tempTex, normalView to normalTex, depthView to depthTex).forEach { (v, t) -> v?.close(); t?.close() }
+        listOf(tempView to tempTex, normalView to normalTex).forEach { (v, t) -> v?.close(); t?.close() }
+        depthViews.forEach { it?.close() }; depthTextures.forEach { it?.close() }
+        depthViews.fill(null); depthTextures.fill(null)
         extraViews.values.forEach { pair -> pair.forEach(GpuTextureView::close) }
         extraTextures.values.forEach { pair -> pair.forEach(GpuTexture::close) }
         extraViews.clear(); extraTextures.clear()
@@ -201,9 +226,8 @@ object PackChain {
         }
         normalTex = device.createTexture({ "vertex-normals" }, GpuTexture.USAGE_TEXTURE_BINDING or GpuTexture.USAGE_RENDER_ATTACHMENT, GpuFormat.RGBA8_UNORM, width, height, 1, 1)
         normalView = device.createTextureView(normalTex!!)
-        depthTex = device.createTexture({ "vertex-depth" }, GpuTexture.USAGE_TEXTURE_BINDING or GpuTexture.USAGE_COPY_DST, GpuFormat.D32_FLOAT, width, height, 1, 1)
-        depthView = device.createTextureView(depthTex!!)
         w = width; h = height
+        createDepths(device)
         createExtraColors(device)
     }
 
@@ -215,6 +239,9 @@ object PackChain {
         val programs = PackFrontend.loadScreenChain(packRoot, PackRuntime.options())
         val semantics = PackSemanticsParser.load(packRoot, PackRuntime.options())
         needsNormals = programs.any { "normalsTex" in it.samplers }
+        neededDepths = programs.flatMap { it.samplers }
+            .mapNotNull { DEPTH.matchEntire(it)?.groupValues?.get(1)?.toInt() }.toSet() +
+            if (needsNormals) setOf(0) else emptySet()
         activeColors = (programs.flatMap { it.outputs } + programs.flatMap { it.samplers }.mapNotNull(::colorId) +
             semantics.flips.values.flatMap(Map<Int, Boolean>::keys)).toSet()
         enforceMemoryBudget(semantics.colors.map { it.format })
@@ -222,6 +249,7 @@ object PackChain {
         if (customColor0()) {
             tempView?.close(); tempTex?.close(); tempView = null; tempTex = null
         }
+        createDepths(device)
         colorClears = semantics.colors.mapIndexed { id, setting ->
             if (!setting.clear) null else (setting.clearColor ?: if (id == 1) WHITE else ZERO).let(::vector)
         }
@@ -244,8 +272,8 @@ object PackChain {
         }
         if (screenPrograms.isEmpty()) screenPrograms = programs.map { program ->
             val samplers = program.samplers.distinct()
-            require(samplers.all { colorId(it) != null || it == "depthtex0" || it == "normalsTex" }) {
-                "${program.name}: unsupported samplers ${samplers.filterNot { colorId(it) != null || it == "depthtex0" || it == "normalsTex" }}"
+            require(samplers.all { colorId(it) != null || DEPTH.matches(it) || it == "normalsTex" }) {
+                "${program.name}: unsupported samplers ${samplers.filterNot { colorId(it) != null || DEPTH.matches(it) || it == "normalsTex" }}"
             }
             val layout = BindGroupLayout.builder().also { builder ->
                 samplers.forEach { builder.withUniform(it, UniformType.COMBINED_IMAGE_SAMPLER) }
@@ -269,7 +297,9 @@ object PackChain {
     }
 
     private fun samplerView(name: String, banks: IntArray, scene: GpuTextureView): GpuTextureView = when (name) {
-        "depthtex0" -> depthView!!
+        "depthtex0" -> depthViews[0]!!
+        "depthtex1" -> depthViews[1]!!
+        "depthtex2" -> depthViews[2]!!
         "normalsTex" -> normalView!!
         else -> colorId(name)?.let { colorView(it, banks[it], scene) } ?: error("unsupported sampler '$name'")
     }
@@ -301,15 +331,23 @@ object PackChain {
 
     private fun customColor0() = colorFormats[0] != GpuFormat.RGBA8_UNORM
 
+    private fun createDepths(device: com.mojang.renderpearl.api.device.GpuDevice) {
+        for (id in neededDepths) if (depthTextures[id] == null) {
+            depthTextures[id] = device.createTexture(
+                { "vertex-depthtex$id" }, GpuTexture.USAGE_TEXTURE_BINDING or GpuTexture.USAGE_COPY_DST,
+                GpuFormat.D32_FLOAT, w, h, 1, 1,
+            )
+            depthViews[id] = device.createTextureView(depthTextures[id]!!)
+        }
+    }
+
     private fun enforceMemoryBudget(formats: List<ColorFormat>) {
         val allocations = activeColors.flatMap { id ->
             val copies = if (id == 0 && formats[id] == ColorFormat.RGBA8) 1 else 2
             List(copies) { bank -> ImageAllocation("colortex$id-$bank", w, h, formats[id].bytesPerPixel,
                 if (id == 0) ImageClass.CRITICAL else ImageClass.NON_CRITICAL) }
-        } + listOf(
-            ImageAllocation("depthtex0", w, h, 4, ImageClass.CRITICAL),
-            ImageAllocation("normalsTex", w, h, 4, ImageClass.NON_CRITICAL),
-        )
+        } + neededDepths.map { ImageAllocation("depthtex$it", w, h, 4, ImageClass.CRITICAL) } +
+            if (needsNormals) listOf(ImageAllocation("normalsTex", w, h, 4, ImageClass.NON_CRITICAL)) else emptyList()
         val budgetMiB = System.getProperty("vertex.memoryBudgetMiB")?.toLongOrNull() ?: 512L
         require(budgetMiB in 64..16384) { "vertex.memoryBudgetMiB must be between 64 and 16384" }
         val plan = MemoryBudgetGovernor.plan(allocations, budgetMiB * MIB, w, h)
@@ -370,6 +408,7 @@ object PackChain {
     private fun vector(values: List<Float>) = Vector4f(values[0], values[1], values[2], values[3])
 
     private val COLORTEX = Regex("""colortex(\d|1[0-5])""")
+    private val DEPTH = Regex("""depthtex([0-2])""")
     private val ZERO = listOf(0f, 0f, 0f, 0f)
     private val WHITE = listOf(1f, 1f, 1f, 1f)
     private const val MIB = 1024L * 1024L

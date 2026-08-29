@@ -19,6 +19,7 @@ object VertexRenderer {
             if (failed) return@register
             try {
                 ensureBoot()
+                PackChain.captureDepth(2)
                 PackChain.draw()
                 frames++
                 val stopAfter = System.getProperty("vertex.autostop")?.toLongOrNull()
