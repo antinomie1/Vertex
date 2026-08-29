@@ -10,7 +10,9 @@ import com.mojang.renderpearl.api.commands.GpuQueryPool
 import com.mojang.renderpearl.api.buffers.GpuBuffer
 import com.mojang.renderpearl.api.pipeline.BindGroupLayout
 import com.mojang.renderpearl.api.pipeline.ColorTargetState
+import com.mojang.renderpearl.api.pipeline.CompareOp
 import com.mojang.renderpearl.api.pipeline.CompiledRenderPipeline
+import com.mojang.renderpearl.api.pipeline.DepthStencilState
 import com.mojang.renderpearl.api.pipeline.PrimitiveTopology
 import com.mojang.renderpearl.api.pipeline.ShaderSource
 import com.mojang.renderpearl.api.pipeline.UniformType
@@ -30,6 +32,8 @@ import dev.vertex.runtime.ImageClass
 import dev.vertex.runtime.MemoryBudgetGovernor
 import dev.vertex.runtime.UniformHeap
 import dev.vertex.runtime.PerformanceWindow
+import dev.vertex.runtime.RenderScalePolicy
+import dev.vertex.runtime.ScreenPassOptimizer
 import dev.vertex.translate.LegacyTranslator
 import dev.vertex.translate.PackUniformCatalog
 import net.minecraft.client.Minecraft
@@ -57,6 +61,7 @@ object PackChain {
     private var blit: CompiledRenderPipeline? = null
     private var sceneToColor0: CompiledRenderPipeline? = null
     private var normals: CompiledRenderPipeline? = null
+    private var depthScale: CompiledRenderPipeline? = null
     private var tempTex: GpuTexture? = null
     private var tempView: GpuTextureView? = null
     private val depthTextures = arrayOfNulls<GpuTexture>(3)
@@ -66,6 +71,10 @@ object PackChain {
     private var normalView: GpuTextureView? = null
     private var w = 0
     private var h = 0
+    private var screenW = 0
+    private var screenH = 0
+    private var renderScale = 1f
+    private var scaleResolved = false
     private var builtForW = 0
     private var builtForH = 0
     private var failed = false
@@ -109,7 +118,7 @@ object PackChain {
         try {
             val device = RenderSystem.getDevice()
             val main = Minecraft.getInstance().gameRenderer.mainRenderTarget()
-            ensureSize(device, main.width, main.height)
+            ensureMainSize(device, main.width, main.height)
             ensurePipelines(device)
             dev.vertex.Vertex.log.info("[Vertex] pack pipelines prewarmed ({}x{})", w, h)
         } catch (t: Throwable) {
@@ -126,7 +135,7 @@ object PackChain {
             val device = RenderSystem.getDevice()
             val main = Minecraft.getInstance().gameRenderer.mainRenderTarget()
             val sceneView = main.colorTextureView ?: return
-            ensureSize(device, main.width, main.height)
+            ensureMainSize(device, main.width, main.height)
             ensurePipelines(device)
 
             val encoder = device.createCommandEncoder()
@@ -136,14 +145,14 @@ object PackChain {
                 debugColorReadback(device, main.colorTexture!!, "a-scene-in")
             }
 
-            if (0 in neededDepths) encoder.copyTextureToTexture(main.depthTexture ?: return, depthTextures[0]!!, 0, 0, 0, 0, 0, w, h)
+            if (0 in neededDepths) captureDepth(encoder, main.depthTexture ?: return, main.depthTextureView ?: return, 0)
             if (needsNormals) pass(encoder, "vertex-pack-normals", normalView!!) { rp ->
                 rp.setPipeline(normals!!)
                 rp.setUniform("depthtex0", depthViews[0]!!, sampler)
             }
 
             banks[0] = 0 // world rendering refreshes the scene target after early programs
-            if (customColor0()) pass(encoder, "vertex-pack-scene-input", colorView(0, 0, sceneView)) { rp ->
+            if (dedicatedColor0()) pass(encoder, "vertex-pack-scene-input", colorView(0, 0, sceneView)) { rp ->
                 RenderSystem.bindDefaultUniforms(rp)
                 rp.setPipeline(sceneToColor0!!)
                 rp.setUniform("InSampler", sceneView, sampler)
@@ -155,7 +164,7 @@ object PackChain {
                 rp.setPipeline(blit!!)
                 rp.setUniform("InSampler", finalColor, sampler)
             }
-            ReplayCapture.capture(device, main.colorTexture!!, w, h)
+            ReplayCapture.capture(device, main.colorTexture!!, screenW, screenH)
             timingPool?.let { pool ->
                 encoder.writeTimestamp(pool, uniformSlot * 2 + 1)
                 timingArmed[uniformSlot] = true
@@ -163,7 +172,7 @@ object PackChain {
 
 
             if (dbg && dbgFrame % 120L == 0L) {
-                debugColorReadback(device, if (customColor0()) extraTextures.getValue(0)[banks[0]] else tempTex!!, "b-composite-out")
+                debugColorReadback(device, if (dedicatedColor0()) extraTextures.getValue(0)[banks[0]] else tempTex!!, "b-composite-out")
                 debugColorReadback(device, main.colorTexture!!, "c-screen-final")
                 dev.vertex.Vertex.log.info("[Vertex] dbg frame={} paused={}", dbgFrame, Minecraft.getInstance().isPaused)
             }
@@ -182,7 +191,7 @@ object PackChain {
             val device = RenderSystem.getDevice()
             val main = Minecraft.getInstance().gameRenderer.mainRenderTarget()
             val scene = main.colorTextureView ?: return
-            ensureSize(device, main.width, main.height)
+            ensureMainSize(device, main.width, main.height)
             ensurePipelines(device)
             val encoder = device.createCommandEncoder()
             collectGpuTiming(frameCounter and 1)
@@ -193,7 +202,7 @@ object PackChain {
             }
             banks.fill(0)
             val sampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR)
-            if (customColor0()) pass(encoder, "vertex-pack-early-input", colorView(0, 0, scene)) { rp ->
+            if (dedicatedColor0()) pass(encoder, "vertex-pack-early-input", colorView(0, 0, scene)) { rp ->
                 RenderSystem.bindDefaultUniforms(rp); rp.setPipeline(sceneToColor0!!); rp.setUniform("InSampler", scene, sampler)
             }
             executePrograms(encoder, sampler, scene, earlyPrograms)
@@ -233,10 +242,8 @@ object PackChain {
         try {
             val device = RenderSystem.getDevice()
             val main = Minecraft.getInstance().gameRenderer.mainRenderTarget()
-            ensureSize(device, main.width, main.height)
-            device.createCommandEncoder().copyTextureToTexture(
-                main.depthTexture ?: return, depthTextures[id]!!, 0, 0, 0, 0, 0, w, h,
-            )
+            ensureMainSize(device, main.width, main.height)
+            captureDepth(device.createCommandEncoder(), main.depthTexture ?: return, main.depthTextureView ?: return, id)
             if (!depthCaptured[id]) {
                 depthCaptured[id] = true
                 dev.vertex.Vertex.log.info("[Vertex] depthtex{} capture armed", id)
@@ -252,8 +259,8 @@ object PackChain {
 
 
     private fun debugColorReadback(device: com.mojang.renderpearl.api.device.GpuDevice, tex: GpuTexture, tag: String) {
-        val bw = w / 4 * 4
-        val bh = h / 4 * 4
+        val bw = tex.getWidth(0) / 4 * 4
+        val bh = tex.getHeight(0) / 4 * 4
         if (bw <= 0 || bh <= 0) return
         val buf = device.createBuffer({ "vertex-dbg" }, GpuBuffer.USAGE_MAP_READ or GpuBuffer.USAGE_COPY_DST, bw.toLong() * bh * 4L)
         val callback = java.lang.Runnable {
@@ -273,6 +280,21 @@ object PackChain {
             } finally { buf.close() }
         }
         device.createCommandEncoder().copyTextureToBuffer(tex, buf, 0L, callback, 0)
+    }
+
+    private fun captureDepth(encoder: CommandEncoder, source: GpuTexture, sourceView: GpuTextureView, id: Int) {
+        if (renderScale == 1f) {
+            encoder.copyTextureToTexture(source, depthTextures[id]!!, 0, 0, 0, 0, 0, w, h)
+            return
+        }
+        val descriptor = RenderPassDescriptor.builder { "vertex-depth-scale-$id" }
+            .withDepthAttachment(depthViews[id]!!, java.util.OptionalDouble.empty()).build()
+        encoder.createRenderPass(descriptor).use { pass ->
+            RenderSystem.bindDefaultUniforms(pass)
+            pass.setPipeline(depthScale!!)
+            pass.setUniform("InSampler", sourceView, RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST))
+            pass.draw(3, 1, 0, 0)
+        }
     }
 
 
@@ -312,7 +334,7 @@ object PackChain {
         extraViews.values.forEach { pair -> pair.forEach(GpuTextureView::close) }
         extraTextures.values.forEach { pair -> pair.forEach(GpuTexture::close) }
         extraViews.clear(); extraTextures.clear()
-        if (!customColor0()) {
+        if (!dedicatedColor0()) {
             tempTex = device.createTexture({ "vertex-temp" }, GpuTexture.USAGE_TEXTURE_BINDING or GpuTexture.USAGE_RENDER_ATTACHMENT, GpuFormat.RGBA8_UNORM, width, height, 1, 1)
             tempView = device.createTextureView(tempTex!!)
         }
@@ -323,14 +345,37 @@ object PackChain {
         createExtraColors(device)
     }
 
+    private fun ensureMainSize(device: com.mojang.renderpearl.api.device.GpuDevice, width: Int, height: Int) {
+        screenW = width; screenH = height
+        ensureSize(device, (width * renderScale).toInt().coerceAtLeast(1),
+            (height * renderScale).toInt().coerceAtLeast(1))
+    }
+
     private fun ensurePipelines(device: com.mojang.renderpearl.api.device.GpuDevice) {
-        if ((screenPrograms.isNotEmpty() || earlyPrograms.isNotEmpty()) && blit != null && (!customColor0() || sceneToColor0 != null) &&
+        if ((screenPrograms.isNotEmpty() || earlyPrograms.isNotEmpty()) && blit != null && (!dedicatedColor0() || sceneToColor0 != null) &&
             (!needsNormals || normals != null && builtForW == w && builtForH == h)) return
         val runDir = Minecraft.getInstance().gameDirectory.toPath()
         val packRoot = PackRuntime.root(runDir)
         ShadowRenderer.discover()
-        val programs = PackFrontend.loadScreenChain(packRoot, PackRuntime.options())
+        val loadedPrograms = PackFrontend.loadScreenChain(packRoot, PackRuntime.options())
+        val programs = loadedPrograms.filterNot {
+            ScreenPassOptimizer.isIdentityCopy(it.fragmentSource, it.outputs, it.samplers)
+        }
+        if (programs.size != loadedPrograms.size) dev.vertex.Vertex.log.info(
+            "[Vertex] eliminated {} identity screen-pass boundaries", loadedPrograms.size - programs.size,
+        )
         val semantics = PackSemanticsParser.load(packRoot, PackRuntime.options())
+        if (!scaleResolved) {
+            val decision = RenderScalePolicy.resolve(
+                System.getProperty("vertex.renderScale")?.toFloatOrNull() ?: 1f,
+                programs.map { it.fragmentSource },
+            )
+            renderScale = decision.scale
+            decision.reason?.let { dev.vertex.Vertex.log.warn("[Vertex] render scale disabled: {}", it) }
+            scaleResolved = true
+            ensureMainSize(device, screenW, screenH)
+            if (renderScale < 1f) dev.vertex.Vertex.log.info("[Vertex] internal render scale: {} ({}x{})", renderScale, w, h)
+        }
         needsNormals = programs.any { "normalsTex" in it.samplers }
         neededDepths = programs.flatMap { it.samplers }
             .mapNotNull { DEPTH.matchEntire(it)?.groupValues?.get(1)?.toInt() }.toSet() +
@@ -340,7 +385,7 @@ object PackChain {
         enforceMemoryBudget(semantics.colors.map { it.format })
         ShadowRenderer.prepare()
         colorFormats = semantics.colors.map { gpuFormat(it.format) }
-        if (customColor0()) {
+        if (dedicatedColor0()) {
             tempView?.close(); tempTex?.close(); tempView = null; tempTex = null
         }
         createDepths(device)
@@ -355,6 +400,7 @@ object PackChain {
                 "pack/post.v" -> POST_VSH
                 "pack/normals.f" -> NORMAL_FSH.replace("__TEXEL__", "vec2(${1.0 / w}, ${1.0 / h})")
                 "pack/blit.f" -> BLIT_FSH
+                "pack/depth_scale.f" -> DEPTH_SCALE_FSH
                 else -> null
             }
         }
@@ -363,6 +409,17 @@ object PackChain {
             normals?.close()
             normals = compile(device, source, id("pack/post.v"), id("pack/normals.f"),
                 BindGroupLayout.builder().withUniform("depthtex0", UniformType.COMBINED_IMAGE_SAMPLER).build())
+        }
+        if (neededDepths.isNotEmpty() && renderScale < 1f && depthScale == null) {
+            val pipeline = com.mojang.renderpearl.api.pipeline.RenderPipeline.builder(RenderPipelines.GLOBALS_SNIPPET)
+                .withLocation(id("pack/depth_scale"))
+                .withVertexShader(id("pack/post.v"))
+                .withFragmentShader(id("pack/depth_scale.f"))
+                .withBindGroupLayout(BindGroupLayouts.IN_SAMPLER)
+                .withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
+                .withDepthStencilState(DepthStencilState(CompareOp.ALWAYS_PASS, true))
+                .build()
+            depthScale = device.compilePipeline(pipeline, source) ?: error("depth scale pipeline compilation failed")
         }
         if (screenPrograms.isEmpty() && earlyPrograms.isEmpty()) {
             val compiled = programs.map { program ->
@@ -403,7 +460,7 @@ object PackChain {
             dev.vertex.Vertex.log.info("[Vertex] uniform heap armed: {} used members, {} bytes x2 slots",
                 programs.flatMap { it.uniforms }.distinct().size, uniformHeap.layout.segmentBytes)
         }
-        if (customColor0() && sceneToColor0 == null) sceneToColor0 = compile(
+        if (dedicatedColor0() && sceneToColor0 == null) sceneToColor0 = compile(
             device, source, id("pack/post.v"), id("pack/blit.f"), BindGroupLayouts.IN_SAMPLER, listOf(colorFormats[0]),
         )
         if (timingPool == null) runCatching {
@@ -424,14 +481,14 @@ object PackChain {
     }
 
     private fun colorView(id: Int, bank: Int, scene: GpuTextureView): GpuTextureView = when {
-        id == 0 && customColor0() -> extraViews.getValue(0)[bank]
+        id == 0 && dedicatedColor0() -> extraViews.getValue(0)[bank]
         id == 0 && bank == 0 -> scene
         id == 0 -> tempView!!
         else -> extraViews.getValue(id)[bank]
     }
 
     private fun createExtraColors(device: com.mojang.renderpearl.api.device.GpuDevice) {
-        activeColors.filter { it != 0 || customColor0() }.filterNot(extraTextures::containsKey).forEach { id ->
+        activeColors.filter { it != 0 || dedicatedColor0() }.filterNot(extraTextures::containsKey).forEach { id ->
             val textures = Array(2) { bank -> device.createTexture(
                 { "vertex-colortex$id-$bank" },
                 GpuTexture.USAGE_TEXTURE_BINDING or GpuTexture.USAGE_RENDER_ATTACHMENT or GpuTexture.USAGE_COPY_DST,
@@ -449,6 +506,7 @@ object PackChain {
     }
 
     private fun customColor0() = colorFormats[0] != GpuFormat.RGBA8_UNORM
+    private fun dedicatedColor0() = customColor0() || renderScale < 1f
 
     private fun collectGpuTiming(slot: Int) {
         val pool = timingPool ?: return
@@ -635,7 +693,7 @@ object PackChain {
     private fun createDepths(device: com.mojang.renderpearl.api.device.GpuDevice) {
         for (id in neededDepths) if (depthTextures[id] == null) {
             depthTextures[id] = device.createTexture(
-                { "vertex-depthtex$id" }, GpuTexture.USAGE_TEXTURE_BINDING or GpuTexture.USAGE_COPY_DST,
+                { "vertex-depthtex$id" }, GpuTexture.USAGE_TEXTURE_BINDING or GpuTexture.USAGE_COPY_DST or GpuTexture.USAGE_RENDER_ATTACHMENT,
                 GpuFormat.D32_FLOAT, w, h, 1, 1,
             )
             depthViews[id] = device.createTextureView(depthTextures[id]!!)
@@ -738,6 +796,12 @@ void main() {
     gl_Position = vec4(uv * vec2(2, 2) - vec2(1, 1), 0.0, 1.0);
     texCoord = uv;
 }
+"""
+    private const val DEPTH_SCALE_FSH = """#version 330
+#extension GL_ARB_separate_shader_objects : require
+uniform sampler2D InSampler;
+layout(location = 0) in vec2 texCoord;
+void main() { gl_FragDepth = texture(InSampler, texCoord).r; }
 """
 
     // 深度梯度→法线；__TEXEL__ 编译期注入像素尺寸
