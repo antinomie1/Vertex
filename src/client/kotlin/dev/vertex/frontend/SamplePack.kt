@@ -129,6 +129,7 @@ void main() {
             image.fillRect(0, 0, 2, 2, -1)
             image.writeToFile(root.resolve("lut.png"))
         }
+        Files.writeString(root.resolve("lut.png.mcmeta"), "{\"texture\":{\"blur\":true,\"clamp\":true}}")
         val tvsh = root.resolve("gbuffers_terrain.vsh")
         val tfsh = root.resolve("gbuffers_terrain.fsh")
         Files.writeString(tvsh, TERRAIN_VSH)

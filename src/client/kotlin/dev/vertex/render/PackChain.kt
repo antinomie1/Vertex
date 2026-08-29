@@ -15,6 +15,8 @@ import com.mojang.renderpearl.api.pipeline.PrimitiveTopology
 import com.mojang.renderpearl.api.pipeline.ShaderSource
 import com.mojang.renderpearl.api.pipeline.UniformType
 import com.mojang.renderpearl.api.textures.FilterMode
+import com.mojang.renderpearl.api.textures.AddressMode
+import com.mojang.renderpearl.api.textures.GpuSampler
 import com.mojang.renderpearl.api.textures.GpuTexture
 import com.mojang.renderpearl.api.textures.GpuTextureView
 import dev.vertex.frontend.PackFrontend
@@ -76,7 +78,8 @@ object PackChain {
     private val extraTextures = hashMapOf<Int, Array<GpuTexture>>()
     private val extraViews = hashMapOf<Int, Array<GpuTextureView>>()
     private val staticTextures = hashMapOf<String, GpuTexture>()
-    private val staticViews = hashMapOf<String, GpuTextureView>()
+    private val staticBindings = hashMapOf<String, TextureBinding>()
+    private val textureSamplers = hashMapOf<TextureFilter, GpuSampler>()
     private var targetBytes = 0L
     private var packBudgetBytes = 512L * MIB
     private var staticBytes = 0L
@@ -210,7 +213,9 @@ object PackChain {
             RenderSystem.bindDefaultUniforms(rp)
             rp.setPipeline(program.pipeline)
             program.samplers.forEach { name ->
-                rp.setUniform(name, program.staticSamplers[name] ?: samplerView(name, banks, scene), sampler)
+                val binding = program.staticSamplers[name]
+                if (binding != null) rp.setUniform(name, binding.view, binding.sampler)
+                else rp.setUniform(name, samplerView(name, banks, scene), sampler)
             }
             if (program.uniforms.isNotEmpty()) rp.setUniform(
                 "VertexPackUniforms",
@@ -558,7 +563,7 @@ object PackChain {
         semantics: dev.vertex.frontend.PackSemantics,
         program: String,
         name: String,
-    ): GpuTextureView? {
+    ): TextureBinding? {
         val stage = when {
             program == "setup" -> "setup"; program == "begin" -> "begin"
             program.startsWith("prepare") -> "prepare"; program.startsWith("deferred") -> "deferred"
@@ -567,8 +572,9 @@ object PackChain {
         val path = if (name == "noisetex") semantics.noisePath else semantics.customTextures[stage]?.get(name)
         if (path == null && name != "noisetex") return null
         val key = path?.let { "file:$it" } ?: "noise:${semantics.noiseResolution}"
-        return staticViews.getOrPut(key) {
+        return staticBindings.getOrPut(key) {
             val image = path?.let { readImage(shaders, it) } ?: generateNoise(semantics.noiseResolution)
+            val filtering = path?.let { readFiltering(shaders, it) } ?: TextureFilter(blur = false, clamp = false)
             image.use {
                 val bytes = it.width.toLong() * it.height * 4L
                 require(it.width <= 4096 && it.height <= 4096 && targetBytes + staticBytes + bytes <= packBudgetBytes) {
@@ -581,8 +587,18 @@ object PackChain {
                 device.createCommandEncoder().writeToTexture(texture, it)
                 staticBytes += bytes
                 staticTextures[key] = texture
-                dev.vertex.Vertex.log.info("[Vertex] static texture '{}' loaded ({}x{})", name, it.width, it.height)
-                device.createTextureView(texture)
+                val sampler = textureSamplers.getOrPut(filtering) {
+                    device.createSampler(
+                        if (filtering.clamp) AddressMode.CLAMP_TO_EDGE else AddressMode.REPEAT,
+                        if (filtering.clamp) AddressMode.CLAMP_TO_EDGE else AddressMode.REPEAT,
+                        if (filtering.blur) FilterMode.LINEAR else FilterMode.NEAREST,
+                        if (filtering.blur) FilterMode.LINEAR else FilterMode.NEAREST,
+                        1, java.util.OptionalDouble.empty(),
+                    )
+                }
+                dev.vertex.Vertex.log.info("[Vertex] static texture '{}' loaded ({}x{}, blur={}, clamp={})",
+                    name, it.width, it.height, filtering.blur, filtering.clamp)
+                TextureBinding(device.createTextureView(texture), sampler)
             }
         }
     }
@@ -591,6 +607,14 @@ object PackChain {
         val path = shaders.resolve(value.removePrefix("/")).normalize()
         require(path.startsWith(shaders) && Files.isRegularFile(path)) { "custom texture is outside the pack or missing: $value" }
         return Files.newInputStream(path).use(NativeImage::read)
+    }
+
+    private fun readFiltering(shaders: Path, value: String): TextureFilter {
+        val image = shaders.resolve(value.removePrefix("/")).normalize()
+        val metadata = image.resolveSibling(image.fileName.toString() + ".mcmeta")
+        if (!Files.isRegularFile(metadata)) return TextureFilter(blur = false, clamp = false)
+        val json = Files.readString(metadata)
+        return TextureFilter(booleanProperty("blur").containsMatchIn(json), booleanProperty("clamp").containsMatchIn(json))
     }
 
     private fun generateNoise(size: Int) = NativeImage(size, size, false).also { image ->
@@ -656,9 +680,12 @@ object PackChain {
         val samplers: List<String>,
         val outputs: List<Int>,
         val flips: Map<Int, Boolean>,
-        val staticSamplers: Map<String, GpuTextureView>,
+        val staticSamplers: Map<String, TextureBinding>,
         val uniforms: Set<String>,
     )
+
+    private data class TextureBinding(val view: GpuTextureView, val sampler: GpuSampler)
+    private data class TextureFilter(val blur: Boolean, val clamp: Boolean)
 
     private fun gpuFormat(format: ColorFormat): GpuFormat = when (format) {
         ColorFormat.R8 -> GpuFormat.R8_UNORM; ColorFormat.RG8 -> GpuFormat.RG8_UNORM; ColorFormat.RGB8 -> GpuFormat.RGB8_UNORM; ColorFormat.RGBA8 -> GpuFormat.RGBA8_UNORM
@@ -683,6 +710,7 @@ object PackChain {
 
     private val COLORTEX = Regex("""colortex(\d|1[0-5])""")
     private val DEPTH = Regex("""depthtex([0-2])""")
+    private fun booleanProperty(name: String) = Regex("""[\"']$name[\"']\s*:\s*true\b""", RegexOption.IGNORE_CASE)
     private val IDENTITY = Matrix4f()
     private val SHADOW_MATRICES = arrayOf("shadowModelView", "shadowModelViewInverse", "shadowProjection", "shadowProjectionInverse")
     private val NORMAL_MATRICES = arrayOf("gbufferNormal", "gbufferNormalInverse", "gbufferPreviousNormal")
