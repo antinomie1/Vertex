@@ -26,4 +26,13 @@ class RenderTargetBanksTest {
         banks.commit(listOf(3, 3), emptyMap())
         assertEquals(1, banks[3])
     }
+
+    @Test
+    fun `duplicate tracking supports render target tables wider than one word`() {
+        val banks = RenderTargetBanks(40)
+        banks.commit(listOf(31, 32, 39, 32), emptyMap())
+        assertEquals(1, banks[31])
+        assertEquals(1, banks[32])
+        assertEquals(1, banks[39])
+    }
 }

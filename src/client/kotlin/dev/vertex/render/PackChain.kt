@@ -676,7 +676,7 @@ object PackChain {
         uniformHeap.putVec3(uniformSlot, "upPosition", 0f, 100f, 0f)
         uniformHeap.putIVec2(uniformSlot, "eyeBrightness", 240, 240)
         uniformHeap.putIVec2(uniformSlot, "eyeBrightnessSmooth", 240, 240)
-        val modelView = RenderSystem.getModelViewMatrixCopy()
+        val modelView = RenderSystem.getModelViewStack()
         putMatrix("gbufferModelView", modelView)
         putMatrix("gbufferModelViewInverse", inverseMatrix.set(modelView).invert())
         putMatrix("gbufferPreviousModelView", previousModelView)
