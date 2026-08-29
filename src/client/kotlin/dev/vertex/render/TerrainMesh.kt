@@ -32,7 +32,7 @@ import kotlin.jvm.JvmStatic
 /**
  * Owns the opaque terrain mesh contract while retaining vanilla section draws.
  *
- * Only SOLID/CUTOUT receive the appended Normal element. Their existing section
+ * SOLID/CUTOUT/TRANSLUCENT receive the appended Normal element. Their existing section
  * buffers, index buffers, indirect draws, and RenderPearl passes remain intact;
  * the mixins replace only the vertex format at compile time and the pipeline at
  * draw time.
@@ -45,7 +45,7 @@ object TerrainMesh {
     private val currentMidUv = ThreadLocal.withInitial { FloatArray(2) }
     private val midUvActive = ThreadLocal.withInitial { false }
     private val shaderId = Identifier.fromNamespaceAndPath("vertex", "terrain_mesh")
-    private val opaqueLayers = setOf(ChunkSectionLayer.SOLID, ChunkSectionLayer.CUTOUT)
+    private val terrainLayers = ChunkSectionLayer.values().toSet()
 
     private val indirectLogged = AtomicBoolean()
     private val separateLogged = AtomicBoolean()
@@ -89,15 +89,17 @@ object TerrainMesh {
             val source = shaderSource(translatedVsh, translatedFsh)
             val solid = createPipelinePair(ChunkSectionLayer.SOLID)
             val cutout = createPipelinePair(ChunkSectionLayer.CUTOUT)
-            val compiled = IdentityHashMap<RenderPipeline, CompiledRenderPipeline>(4)
-            listOf(solid.base, solid.multidraw, cutout.base, cutout.multidraw).forEach { pipeline ->
+            val translucent = createPipelinePair(ChunkSectionLayer.TRANSLUCENT)
+            val compiled = IdentityHashMap<RenderPipeline, CompiledRenderPipeline>(6)
+            listOf(solid.base, solid.multidraw, cutout.base, cutout.multidraw,
+                translucent.base, translucent.multidraw).forEach { pipeline ->
                 compiled[pipeline] = device.compilePipeline(pipeline, source)
                     ?: error("RenderPearl rejected ${pipeline.location}")
             }
-            prepared = Prepared(device, solid, cutout, compiled)
+            prepared = Prepared(device, solid, cutout, translucent, compiled)
             TerrainCommandCache.invalidate()
             Vertex.log.info(
-                "[Vertex] terrain mesh surgery armed: stride={} layers=solid,cutout (gbuffers_terrain translated)",
+                "[Vertex] terrain mesh surgery armed: stride={} layers=solid,cutout,translucent (gbuffers_terrain translated)",
                 customFormat.getVertexSize()
             )
         } catch (t: Throwable) {
@@ -108,13 +110,17 @@ object TerrainMesh {
 
     @JvmStatic
     fun formatFor(layer: ChunkSectionLayer): VertexFormat =
-        if (prepared != null && layer in opaqueLayers) customFormat else layer.vertexFormat()
+        if (prepared != null && layer in terrainLayers) customFormat else layer.vertexFormat()
 
     @JvmStatic
     fun pipelineFor(layer: ChunkSectionLayer, multidraw: Boolean): RenderPipeline? {
         val state = prepared ?: return null
-        if (layer !in opaqueLayers) return null
-        val pair = if (layer == ChunkSectionLayer.SOLID) state.solid else state.cutout
+        if (layer !in terrainLayers) return null
+        val pair = when (layer) {
+            ChunkSectionLayer.SOLID -> state.solid
+            ChunkSectionLayer.CUTOUT -> state.cutout
+            ChunkSectionLayer.TRANSLUCENT -> state.translucent
+        }
         return if (multidraw) pair.multidraw else pair.base
     }
     @JvmStatic
@@ -128,8 +134,8 @@ object TerrainMesh {
 
     @JvmStatic
     fun isMultidrawPipeline(pipeline: RenderPipeline): Boolean? = prepared?.let { state -> when (pipeline) {
-        state.solid.multidraw, state.cutout.multidraw -> true
-        state.solid.base, state.cutout.base -> false
+        state.solid.multidraw, state.cutout.multidraw, state.translucent.multidraw -> true
+        state.solid.base, state.cutout.base, state.translucent.base -> false
         else -> null
     } }
     @JvmStatic
@@ -210,10 +216,13 @@ object TerrainMesh {
             .withVertexShader(shaderId)
             .withFragmentShader(shaderId)
             .withVertexBinding(0, customFormat)
-            .withColorTargetState(ColorTargetState.DEFAULT)
         if (layer == ChunkSectionLayer.CUTOUT) {
             builder.withShaderDefine("ALPHA_CUTOUT", 0.5f)
         }
+        val vanilla = layer.pipeline(multidraw)
+        builder.withCull(vanilla.isCull())
+        vanilla.depthStencilState?.let(builder::withDepthStencilState)
+        vanilla.colorTargetStates.forEachIndexed { index, target -> target?.let { builder.withColorTargetState(index, it) } }
         return builder.build()
     }
 
@@ -247,6 +256,7 @@ object TerrainMesh {
         val device: GpuDevice,
         val solid: PipelinePair,
         val cutout: PipelinePair,
+        val translucent: PipelinePair,
         val compiled: IdentityHashMap<RenderPipeline, CompiledRenderPipeline>,
     )
 

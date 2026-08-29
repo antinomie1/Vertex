@@ -71,7 +71,11 @@ data class SharedVulkanContext(
                 health = FamilyHealth(TierNegotiator.negotiate(
                     caps,
                     compatibility,
-                    implementedTier2 = setOf(ProgramFamily.TERRAIN_OPAQUE, ProgramFamily.SCREEN_CHAIN),
+                    implementedTier2 = setOf(
+                        ProgramFamily.TERRAIN_OPAQUE,
+                        ProgramFamily.TERRAIN_WATER,
+                        ProgramFamily.SCREEN_CHAIN,
+                    ),
                 )),
             )
         }
