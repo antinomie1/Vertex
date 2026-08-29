@@ -96,17 +96,15 @@ object TerrainMesh {
             val source = shaderSource(translatedVsh, translatedFsh)
             val solid = createPipelinePair(ChunkSectionLayer.SOLID)
             val cutout = createPipelinePair(ChunkSectionLayer.CUTOUT)
-            val translucent = createPipelinePair(ChunkSectionLayer.TRANSLUCENT)
-            val compiled = IdentityHashMap<RenderPipeline, CompiledRenderPipeline>(6)
-            listOf(solid.base, solid.multidraw, cutout.base, cutout.multidraw,
-                translucent.base, translucent.multidraw).forEach { pipeline ->
+            val compiled = IdentityHashMap<RenderPipeline, CompiledRenderPipeline>(4)
+            listOf(solid.base, solid.multidraw, cutout.base, cutout.multidraw).forEach { pipeline ->
                 compiled[pipeline] = device.compilePipeline(pipeline, source)
                     ?: error("RenderPearl rejected ${pipeline.location}")
             }
-            prepared = Prepared(device, solid, cutout, translucent, compiled)
+            prepared = Prepared(device, solid, cutout, compiled)
             TerrainCommandCache.invalidate()
             Vertex.log.info(
-                "[Vertex] terrain mesh surgery armed: stride={} layers=solid,cutout,translucent (gbuffers_terrain translated)",
+                "[Vertex] terrain mesh surgery armed: stride={} layers=solid,cutout (gbuffers_terrain translated)",
                 customFormat.getVertexSize()
             )
         } catch (t: Throwable) {
@@ -126,7 +124,7 @@ object TerrainMesh {
         val pair = when (layer) {
             ChunkSectionLayer.SOLID -> state.solid
             ChunkSectionLayer.CUTOUT -> state.cutout
-            ChunkSectionLayer.TRANSLUCENT -> state.translucent
+            ChunkSectionLayer.TRANSLUCENT -> return null
         }
         return if (multidraw) pair.multidraw else pair.base
     }
@@ -141,8 +139,8 @@ object TerrainMesh {
 
     @JvmStatic
     fun isMultidrawPipeline(pipeline: RenderPipeline): Boolean? = prepared?.let { state -> when (pipeline) {
-        state.solid.multidraw, state.cutout.multidraw, state.translucent.multidraw -> true
-        state.solid.base, state.cutout.base, state.translucent.base -> false
+        state.solid.multidraw, state.cutout.multidraw -> true
+        state.solid.base, state.cutout.base -> false
         else -> null
     } }
     @JvmStatic
@@ -274,7 +272,6 @@ object TerrainMesh {
         val device: GpuDevice,
         val solid: PipelinePair,
         val cutout: PipelinePair,
-        val translucent: PipelinePair,
         val compiled: IdentityHashMap<RenderPipeline, CompiledRenderPipeline>,
     )
 

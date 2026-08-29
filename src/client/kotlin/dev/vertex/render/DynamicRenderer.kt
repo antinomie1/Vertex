@@ -3,9 +3,11 @@ package dev.vertex.render
 import com.mojang.blaze3d.systems.RenderSystem
 import com.mojang.renderpearl.api.device.GpuDevice
 import com.mojang.renderpearl.api.pipeline.CompiledRenderPipeline
+import com.mojang.renderpearl.api.pipeline.BindGroupLayout
 import com.mojang.renderpearl.api.pipeline.RenderPipeline
 import com.mojang.renderpearl.api.pipeline.ShaderSource
 import com.mojang.renderpearl.api.pipeline.ShaderType
+import com.mojang.renderpearl.api.pipeline.UniformType
 import dev.vertex.Vertex
 import dev.vertex.core.RuntimeDiagnostics
 import dev.vertex.core.SharedVulkanContext
@@ -79,8 +81,10 @@ object DynamicRenderer {
                         gpu,
                         entityPipelines,
                         entityShaderId,
-                        shaderSource(entityShaderId, LegacyTranslator.dynamicVertex(dynamic), LegacyTranslator.dynamicFragment(dynamic)),
+                        shaderSource(entityShaderId, LegacyTranslator.dynamicVertex(dynamic), LegacyTranslator.dynamicFragment(dynamic, dropExtraTargets = true)),
                         ::compatible,
+                        dynamic.samplers.toSet(),
+                        setOf("EMISSIVE"),
                     )
                     if (entityPipelines.any(pipelines::containsKey)) {
                         context.health.downgrade(ProgramFamily.HAND, RenderTier.TIER_2, "dynamic entity bridge is shared")
@@ -95,8 +99,10 @@ object DynamicRenderer {
                             gpu,
                             blockPipelines,
                             blockShaderId,
-                            shaderSource(blockShaderId, LegacyTranslator.blockVertex(dynamic), LegacyTranslator.dynamicFragment(dynamic)),
+                            shaderSource(blockShaderId, LegacyTranslator.blockVertex(dynamic), LegacyTranslator.dynamicFragment(dynamic, dropExtraTargets = true)),
                             ::blockCompatible,
+                            dynamic.samplers.toSet(),
+                            setOf("EMISSIVE"),
                         )
                         if (blockPipelines.any(pipelines::containsKey)) {
                             Vertex.log.info(
@@ -151,7 +157,7 @@ object DynamicRenderer {
             format.contains("UV0") && format.contains("UV2") && !format.contains("Normal")
     }
 
-    private fun clone(original: RenderPipeline, shaderId: Identifier): RenderPipeline {
+    private fun clone(original: RenderPipeline, shaderId: Identifier, samplers: Set<String>, skipDefines: Set<String> = emptySet()): RenderPipeline {
         val builder = RenderPipeline.builder()
             .withLocation(Identifier.fromNamespaceAndPath("vertex", "pipeline/dynamic_${original.getLocation().path.replace('/', '_')}"))
             .withVertexShader(shaderId)
@@ -163,13 +169,19 @@ object DynamicRenderer {
             format?.let { builder.withVertexBinding(index, it) }
         }
         original.getBindGroupLayouts().forEach(builder::withBindGroupLayout)
+        builder.withBindGroupLayout(BindGroupLayout.builder().also { bindings ->
+            samplers.forEach { bindings.withUniform(it, UniformType.COMBINED_IMAGE_SAMPLER) }
+            bindings.withUniform("Sampler2", UniformType.COMBINED_IMAGE_SAMPLER)
+            bindings.withUniform("VertexPackUniforms", UniformType.UNIFORM_BUFFER)
+        }.build())
         original.getColorTargetStates().forEachIndexed { index, target ->
             if (target == null) builder.withUnusedColorTargetState(index) else builder.withColorTargetState(index, target)
         }
         original.getDepthStencilState()?.let(builder::withDepthStencilState)
         if (original.pushConstantSize() > 0) builder.withPushConstantSize(original.pushConstantSize())
-        original.getShaderDefines().flags.forEach(builder::withShaderDefine)
+        original.getShaderDefines().flags.filterNot(skipDefines::contains).forEach(builder::withShaderDefine)
         original.getShaderDefines().values.forEach { (name, value) ->
+            if (name in skipDefines) return@forEach
             value.toIntOrNull()?.let { builder.withShaderDefine(name, it) }
                 ?: value.toFloatOrNull()?.let { builder.withShaderDefine(name, it) }
                 ?: builder.withShaderDefine(name)
@@ -193,11 +205,13 @@ object DynamicRenderer {
         shaderId: Identifier,
         source: ShaderSource,
         compatible: (RenderPipeline) -> Boolean,
+        samplers: Set<String> = emptySet(),
+        skipDefines: Set<String> = emptySet(),
     ): Int {
         var failures = 0
         originals.distinct().forEach { original ->
             if (!compatible(original)) return@forEach
-            val custom = clone(original, shaderId)
+            val custom = clone(original, shaderId, samplers, skipDefines)
             val built = gpu.compilePipeline(custom, source)
             if (built == null) failures++ else {
                 pipelines[original] = custom
@@ -225,6 +239,7 @@ object DynamicRenderer {
                     skyShaderId,
                     source,
                     ::positionOnly,
+                    program.samplers.toSet(),
                 )
                 skyArmed = pipelines.containsKey(RenderPipelines.SKY)
                 if (skyArmed) Vertex.log.info("[Vertex] sky render bridge armed")
@@ -238,7 +253,7 @@ object DynamicRenderer {
                     LegacyTranslator.skyVertex(program, includeFog = false),
                     LegacyTranslator.skyFragment(program, includeFog = false),
                 )
-                compileGroup(gpu, listOf(RenderPipelines.STARS), starShaderId, source) { positionOnly(it) }
+                compileGroup(gpu, listOf(RenderPipelines.STARS), starShaderId, source, { positionOnly(it) }, program.samplers.toSet())
                 skyArmed = skyArmed || pipelines.containsKey(RenderPipelines.STARS)
             }.onFailure { Vertex.log.debug("[Vertex] stars shader rejected; retaining vanilla path", it) }
         }
@@ -249,7 +264,7 @@ object DynamicRenderer {
                     LegacyTranslator.particleVertex(program),
                     LegacyTranslator.particleFragment(program),
                 )
-                val skipped = compileGroup(gpu, listOf(RenderPipelines.OPAQUE_PARTICLE, RenderPipelines.TRANSLUCENT_PARTICLE), particleShaderId, source) { particle(it) }
+                val skipped = compileGroup(gpu, listOf(RenderPipelines.OPAQUE_PARTICLE, RenderPipelines.TRANSLUCENT_PARTICLE), particleShaderId, source, { particle(it) }, program.samplers.toSet())
                 particleArmed = RenderPipelines.OPAQUE_PARTICLE in pipelines || RenderPipelines.TRANSLUCENT_PARTICLE in pipelines
                 if (particleArmed) Vertex.log.info("[Vertex] particle render bridge armed")
                 if (skipped > 0) Vertex.log.debug("[Vertex] skipped {} particle pipelines", skipped)
@@ -262,7 +277,7 @@ object DynamicRenderer {
                     LegacyTranslator.particleVertex(program),
                     LegacyTranslator.particleFragment(program),
                 )
-                val skipped = compileGroup(gpu, listOf(RenderPipelines.WEATHER), particleShaderId, source) { particle(it) }
+                val skipped = compileGroup(gpu, listOf(RenderPipelines.WEATHER), particleShaderId, source, { particle(it) }, program.samplers.toSet())
                 weatherArmed = RenderPipelines.WEATHER in pipelines
                 if (weatherArmed) Vertex.log.info("[Vertex] weather render bridge armed")
                 if (skipped > 0) Vertex.log.debug("[Vertex] skipped {} weather pipelines", skipped)

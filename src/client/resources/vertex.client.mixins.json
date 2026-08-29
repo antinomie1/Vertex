@@ -10,6 +10,7 @@
     "RenderSetupPipelineAccessor",
     "RenderTypeDynamicPipelineMixin",
     "RenderSystemDynamicPipelineMixin",
+    "PreparedRenderTypeSamplerMixin",
     "GameRendererProjectionAccessor",
     "ProjectionMatrixBufferAccessor",
     "LevelRendererTerrainMeshMixin",

@@ -232,7 +232,7 @@ $outputs
     }
 
     /** Translates the fragment half while preserving the pack's varying names. */
-    fun dynamicFragment(program: LoadedProgram): String {
+    fun dynamicFragment(program: LoadedProgram, dropExtraTargets: Boolean = false): String {
         val varyings = varyingDeclarations(program.vertexSource)
         val fragmentVaryings = varyingDeclarations(program.fragmentSource)
         require(fragmentVaryings.keys.all(varyings::containsKey)) { "dynamic fragment references an undeclared varying" }
@@ -247,7 +247,8 @@ $outputs
             .replace(Regex("""\bgl_FragData\s*\[\s*0\s*]"""), "fragColor")
             .replace(Regex("""\bgl_FragColor\b"""), "fragColor")
             .let(LegacyUniformTranslator::translate)
-        require(!Regex("""gl_FragData\s*\[\s*[1-9]""").containsMatchIn(body)) {
+        if (dropExtraTargets) body = body.replace(Regex("""\bgl_FragData\s*\[\s*[1-9]\s*]\s*=\s*[^;]+;"""), "")
+        else require(!Regex("""gl_FragData\s*\[\s*[1-9]""").containsMatchIn(body)) {
             "dynamic fragment programs must write only render target 0"
         }
         val lightmap = if (body.contains("Sampler2")) "uniform sampler2D Sampler2;" else ""
@@ -370,10 +371,11 @@ $outputs
 
     fun particleFragment(program: LoadedProgram): String = dynamicFragment(program)
 
-    fun shadowVertex(program: LoadedProgram): String {
+    fun shadowVertex(program: LoadedProgram, separateAo: Boolean = false, midTexCoord: Boolean = false): String {
         var location = 0
         var body = program.vertexSource
             .replace(Regex("""^\s*#(?:version|extension)[^\n]*""", RegexOption.MULTILINE), "")
+            .replace(Regex("""\battribute\s+(?:(?:lowp|mediump|highp)\s+)?\w+\s+(?:mc_Entity|mc_midTexCoord|at_midBlock|at_tangent|tangent)\s*;"""), "")
             .replace(VARYING) { match ->
                 match.groupValues[2].split(',').joinToString("\n") { raw ->
                     "layout(location = ${location++}) out ${match.groupValues[1]} ${raw.trim()};"
@@ -389,12 +391,25 @@ $outputs
             .replace(Regex("""\bgl_Color\b"""), "Color")
             .replace(Regex("""\bgl_NormalMatrix\b"""), "mat3(1.0)")
             .replace(Regex("""\bgl_Normal\b"""), "Normal")
+            .replace(Regex("""\bmc_Entity\b"""), "vec4(float(UV1.x / 2 - 1), float(UV1.x & 1), 0.0, 0.0)")
+            .replace(Regex("""\bmc_midTexCoord\b"""), if (midTexCoord) "vec4(UV3, 0.0, 1.0)" else "vec4(0.0)")
+            .replace(Regex("""\bat_midBlock\b"""), "((fract(Position) - vec3(0.5)) * 64.0)")
+            .replace(Regex("""\bat_tangent\b|\btangent\b"""), "vec4(0.0, 0.0, 1.0, 1.0)")
             .let(::modernizeTextureCalls)
             .let(LegacyUniformTranslator::translate)
         val main = Regex("""void\s+main\s*\(\s*\)\s*\{""").find(body)
             ?: error("${program.name}: shadow vertex shader has no main()")
         body = body.replaceRange(main.range, main.value + "\n    vec3 pos = Position + (ChunkPosition - CameraBlockPos) + CameraOffset;")
-        return SHADOW_HEADER + body.trimStart()
+        val uv0 = if (separateAo) 3 else 2
+        val uv1 = uv0 + 1
+        val uv2 = uv0 + 2
+        val chunk = if (separateAo) 6 else 5
+        val visibility = chunk + 1
+        val midBase = uv2 + 1
+        val midMulti = visibility + 1
+        val normalBase = if (midTexCoord) midBase + 1 else midBase
+        val normalMulti = if (midTexCoord) midMulti + 1 else midMulti
+        return shadowHeader(uv0, uv1, uv2, normalBase, normalMulti, chunk, visibility, midBase, midMulti, midTexCoord, separateAo) + body.trimStart()
     }
 
     fun shadowFragment(program: LoadedProgram): String {
@@ -402,14 +417,14 @@ $outputs
         var body = program.fragmentSource
             .replace(Regex("""^\s*#(?:version|extension)[^\n]*""", RegexOption.MULTILINE), "")
             .replace(Regex("""^\s*/\*\s*(?:DRAWBUFFERS|RENDERTARGETS)\s*:[^*]*\*/\s*$""", RegexOption.MULTILINE), "")
-            .replace(Regex("""uniform\s+sampler2D\s+(?:texture|gtexture)\s*;"""), "")
+            .replace(Regex("""uniform\s+sampler2D\s+(?:tex|texture|gtexture)\s*;"""), "")
             .replace(VARYING) { match ->
                 match.groupValues[2].split(',').joinToString("\n") { raw ->
                     "layout(location = ${location++}) in ${match.groupValues[1]} ${raw.trim()};"
                 }
             }
             // Replace only the legacy sampler identifier; keep modern texture(...) calls intact.
-            .replace(Regex("""\b(?:texture|gtexture)\b(?!\s*\()"""), "Sampler0")
+            .replace(Regex("""\b(?:tex|texture|gtexture)\b(?!\s*\()"""), "Sampler0")
             .let(::modernizeTextureCalls)
             .let(LegacyUniformTranslator::translate)
             .replace(Regex("""\bgl_FragData\s*\[\s*0\s*]"""), "shadowColor")
@@ -421,7 +436,7 @@ layout(location = 0) out vec4 shadowColor;
 """ + body.trimStart()
     }
 
-    private const val SHADOW_HEADER = """#version 330
+    private fun shadowHeader(uv0: Int, uv1: Int, uv2: Int, normalBase: Int, normalMulti: Int, chunk: Int, visibility: Int, midBase: Int, midMulti: Int, midTexCoord: Boolean, separateAo: Boolean) = """#version 330
 #extension GL_ARB_separate_shader_objects : require
 #include <minecraft:globals.glsl>
 #ifndef MULTIDRAW_TERRAIN
@@ -429,12 +444,17 @@ layout(location = 0) out vec4 shadowColor;
 #endif
 layout(location=0) in vec3 Position;
 layout(location=1) in vec4 Color;
-layout(location=2) in vec2 UV0;
+${if (separateAo) "layout(location=2) in vec4 Color2;" else ""}
+layout(location=$uv0) in vec2 UV0;
+layout(location=$uv1) in ivec2 UV1;
+layout(location=$uv2) in ivec2 UV2;
+${if (midTexCoord) "#ifdef MULTIDRAW_TERRAIN\nlayout(location=$midMulti) in vec2 UV3;\n#else\nlayout(location=$midBase) in vec2 UV3;\n#endif" else ""}
 #ifdef MULTIDRAW_TERRAIN
-layout(location=5) in ivec3 ChunkPosition;
-layout(location=7) in vec3 Normal;
+layout(location=$chunk) in ivec3 ChunkPosition;
+layout(location=$visibility) in float ChunkVisibility;
+layout(location=$normalMulti) in vec3 Normal;
 #else
-layout(location=5) in vec3 Normal;
+layout(location=$normalBase) in vec3 Normal;
 #endif
 layout(std140) uniform ShadowUniforms { mat4 vertexShadowMvp; };
 """

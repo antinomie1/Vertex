@@ -21,6 +21,7 @@ import dev.vertex.Vertex
 import dev.vertex.core.SharedVulkanContext
 import dev.vertex.frontend.PackFrontend
 import dev.vertex.frontend.PackRuntime
+import dev.vertex.frontend.PackSemanticsParser
 import dev.vertex.runtime.ShadowCacheState
 import dev.vertex.runtime.ImageAllocation
 import dev.vertex.runtime.ImageClass
@@ -118,6 +119,9 @@ object ShadowRenderer {
             val mc = Minecraft.getInstance()
             val root = PackRuntime.root(mc.gameDirectory.toPath())
             val device = RenderSystem.getDevice()
+            // Shadow pipelines consume the same widened terrain buffer as the main
+            // terrain path; prepare it first so Color2/UV3 are part of the ABI.
+            TerrainMesh.prepare()
             depthTexture = device.createTexture(
                 { "vertex-shadow-depth" }, GpuTexture.USAGE_TEXTURE_BINDING or GpuTexture.USAGE_RENDER_ATTACHMENT,
                 GpuFormat.D32_FLOAT, resolution, resolution, 1, 1,
@@ -133,7 +137,10 @@ object ShadowRenderer {
             uniformBuffer = device.createBuffer(
                 { "vertex-shadow-matrix" }, GpuBuffer.USAGE_UNIFORM or GpuBuffer.USAGE_COPY_DST, 512L,
             )
-            compile(device, colorView != null, PackFrontend.loadShadow(root, PackRuntime.options()))
+            val pack = PackFrontend.loadShadow(root, PackRuntime.options())
+            val requirements = pack?.let { dev.vertex.translate.TerrainRequirementScanner.scan(it.vertexSource) }
+            val separateAo = PackSemanticsParser.load(root, PackRuntime.options()).separateAo
+            compile(device, colorView != null, pack, separateAo, requirements?.midTexCoord == true)
             device.createCommandEncoder().createRenderPass(descriptor()).close()
             Vertex.log.info("[Vertex] shadow pass armed: {}x{}, samplers={}", resolution, resolution, requested.sorted())
         } catch (t: Throwable) {
@@ -237,8 +244,18 @@ object ShadowRenderer {
     private fun sunAngle(mc: Minecraft) = mc.gameRenderer.mainCamera().attributeProbe()
         .getValue(EnvironmentAttributes.SUN_ANGLE, mc.deltaTracker.getGameTimeDeltaPartialTick(true))
 
-    private fun compile(device: GpuDevice, color: Boolean, program: dev.vertex.frontend.LoadedProgram?) {
-        val layout = BindGroupLayout.builder().withUniform("ShadowUniforms", UniformType.UNIFORM_BUFFER).build()
+    private fun compile(
+        device: GpuDevice,
+        color: Boolean,
+        program: dev.vertex.frontend.LoadedProgram?,
+        separateAo: Boolean,
+        midTexCoord: Boolean,
+    ) {
+        val layout = BindGroupLayout.builder()
+            .withUniform("Sampler0", UniformType.COMBINED_IMAGE_SAMPLER)
+            .withUniform("ShadowUniforms", UniformType.UNIFORM_BUFFER)
+            .withUniform("VertexPackUniforms", UniformType.UNIFORM_BUFFER)
+            .build()
         fun pipeline(multidraw: Boolean): RenderPipeline {
             val snippet = if (multidraw) RenderPipelines.MULTIDRAW_TERRAIN_SNIPPET else RenderPipelines.TERRAIN_SNIPPET
             val builder = RenderPipeline.builder(snippet)
@@ -257,13 +274,17 @@ object ShadowRenderer {
             else -> loadResource(shader, type)
         } }
         val translated = program?.let { pack -> ShaderSource { shader, type -> when {
-            shader == id("shadow") && type == ShaderType.VERTEX -> LegacyTranslator.shadowVertex(pack)
+            shader == id("shadow") && type == ShaderType.VERTEX -> LegacyTranslator.shadowVertex(pack, separateAo, midTexCoord)
             shader == id("shadow") && type == ShaderType.FRAGMENT -> LegacyTranslator.shadowFragment(pack)
             else -> loadResource(shader, type)
         } } }
         var usedPack = translated != null
         fun compilePipeline(pipe: RenderPipeline): CompiledRenderPipeline {
-            val result = translated?.let { device.compilePipeline(pipe, it) }
+            val result = translated?.let {
+                runCatching { device.compilePipeline(pipe, it) }
+                    .onFailure { Vertex.log.warn("[Vertex] translated shadow pipeline rejected: {}", pipe.location, it) }
+                    .getOrNull()
+            }
             if (result != null) return result
             usedPack = false
             return device.compilePipeline(pipe, fallback) ?: error("shadow pipeline compilation failed")

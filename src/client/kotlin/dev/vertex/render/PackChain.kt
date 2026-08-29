@@ -310,6 +310,26 @@ object PackChain {
         bindUniforms(pass)
     }
 
+    @JvmStatic
+    fun bindDynamicSamplers(pass: RenderPass) {
+        val scene = Minecraft.getInstance().gameRenderer.mainRenderTarget().colorTextureView ?: return
+        val sampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR)
+        fun bind(name: String, view: GpuTextureView?) {
+            if (view == null) return
+            runCatching { pass.setUniform(name, view, sampler) }
+        }
+        staticByName["noisetex"]?.let { runCatching { pass.setUniform("noisetex", it.view, it.sampler) } }
+        bind("Sampler2", Minecraft.getInstance().gameRenderer.lightmap())
+        bind("depthtex0", depthViews[0] ?: scene)
+        bind("depthtex1", depthViews[1] ?: scene)
+        bind("depthtex2", depthViews[2] ?: scene)
+        bind("normalsTex", normalView)
+        bind("shadowtex0", ShadowRenderer.view("shadowtex0"))
+        bind("shadowtex1", ShadowRenderer.view("shadowtex1"))
+        bind("shadowcolor0", ShadowRenderer.view("shadowcolor0"))
+        bind("shadowcolor1", ShadowRenderer.view("shadowcolor1"))
+    }
+
     private fun enabled() = !failed &&
         SharedVulkanContext.attach().tier(ProgramFamily.SCREEN_CHAIN) == RenderTier.TIER_2
 
