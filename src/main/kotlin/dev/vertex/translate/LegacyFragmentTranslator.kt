@@ -9,6 +9,7 @@ object LegacyFragmentTranslator {
         var body = source
             .replace(Regex("""^\s*#version[^\n]*""", RegexOption.MULTILINE), "")
             .replace(Regex("""^\s*#extension[^\n]*""", RegexOption.MULTILINE), "")
+            .replace(BUFFER_DIRECTIVE, "")
         var location = 0
         body = varying.replace(body) { match ->
             "layout(location = ${location++}) in ${match.groupValues[1]} ${match.groupValues[2]};"
@@ -30,4 +31,9 @@ object LegacyFragmentTranslator {
             append(body.trimStart())
         }
     }
+
+    private val BUFFER_DIRECTIVE = Regex(
+        """^\s*const\s+(?:int|bool|vec4)\s+\w+(?:Format|Clear|ClearColor)\s*=.*;\s*$""",
+        RegexOption.MULTILINE,
+    )
 }

@@ -62,6 +62,9 @@ void main() {
     val FSH_2 = """#version 120
 uniform sampler2D colortex0;
 varying vec2 texcoord;
+const int colortex0Format = RGBA16F;
+const int colortex1Format = RGBA16F;
+const vec4 colortex1ClearColor = vec4(0.1, 0.2, 0.3, 1.0);
 void main() {
     vec3 c = texture2D(colortex0, texcoord).rgb;
     /* DRAWBUFFERS:01 */
@@ -80,6 +83,7 @@ void main() {
         Files.writeString(fsh, FSH)
         Files.writeString(root.resolve("composite1.vsh"), VSH)
         Files.writeString(root.resolve("composite1.fsh"), FSH_2)
+        Files.writeString(root.resolve("shaders.properties"), "flip.composite1.colortex1=false\n")
         val tvsh = root.resolve("gbuffers_terrain.vsh")
         val tfsh = root.resolve("gbuffers_terrain.fsh")
         Files.writeString(tvsh, TERRAIN_VSH)

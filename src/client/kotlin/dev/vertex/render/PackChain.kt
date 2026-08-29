@@ -17,6 +17,11 @@ import com.mojang.renderpearl.api.textures.GpuTexture
 import com.mojang.renderpearl.api.textures.GpuTextureView
 import dev.vertex.frontend.PackFrontend
 import dev.vertex.frontend.PackRuntime
+import dev.vertex.frontend.PackSemanticsParser
+import dev.vertex.frontend.ColorFormat
+import dev.vertex.runtime.ImageAllocation
+import dev.vertex.runtime.ImageClass
+import dev.vertex.runtime.MemoryBudgetGovernor
 import dev.vertex.translate.LegacyTranslator
 import net.minecraft.client.Minecraft
 import net.minecraft.client.renderer.BindGroupLayouts
@@ -32,6 +37,7 @@ import org.joml.Vector4f
 object PackChain {
     private var screenPrograms = emptyList<ScreenProgram>()
     private var blit: CompiledRenderPipeline? = null
+    private var sceneToColor0: CompiledRenderPipeline? = null
     private var normals: CompiledRenderPipeline? = null
     private var tempTex: GpuTexture? = null
     private var tempView: GpuTextureView? = null
@@ -47,6 +53,8 @@ object PackChain {
     private var dbgFrame = 0L
     private var needsNormals = false
     private var activeColors = emptySet<Int>()
+    private var colorFormats = List(16) { GpuFormat.RGBA8_UNORM }
+    private var colorClears = List<Vector4f?>(16) { Vector4f() }
     private val extraTextures = hashMapOf<Int, Array<GpuTexture>>()
     private val extraViews = hashMapOf<Int, Array<GpuTextureView>>()
     private val banks = IntArray(16)
@@ -89,15 +97,23 @@ object PackChain {
                 rp.setUniform("depthtex0", depthView!!, sampler)
             }
 
-            for (pair in extraTextures.values) for (texture in pair) encoder.clearColorTexture(texture, CLEAR_COLOR)
+            for ((id, pair) in extraTextures) colorClears[id]?.let { color ->
+                for (texture in pair) encoder.clearColorTexture(texture, color)
+            }
             banks.fill(0)
+            if (customColor0()) pass(encoder, "vertex-pack-scene-input", colorView(0, 0, sceneView)) { rp ->
+                RenderSystem.bindDefaultUniforms(rp)
+                rp.setPipeline(sceneToColor0!!)
+                rp.setUniform("InSampler", sceneView, sampler)
+            }
             screenPrograms.forEach { program ->
                 pass(encoder, "vertex-pack-${program.name}", program.outputs, sceneView) { rp ->
                     RenderSystem.bindDefaultUniforms(rp)
                     rp.setPipeline(program.pipeline)
                     program.samplers.forEach { name -> rp.setUniform(name, samplerView(name, banks, sceneView), sampler) }
                 }
-                program.outputs.forEach { banks[it] = banks[it] xor 1 }
+                for (id in program.outputs) if (program.flips[id] != false) banks[id] = banks[id] xor 1
+                for ((id, flip) in program.flips) if (flip) banks[id] = banks[id] xor 1
             }
             val finalColor = colorView(0, banks[0], sceneView)
             if (finalColor !== sceneView) pass(encoder, "vertex-pack-blit", sceneView) { rp ->
@@ -108,7 +124,7 @@ object PackChain {
 
 
             if (dbg && dbgFrame % 120L == 0L) {
-                debugColorReadback(device, tempTex!!, "b-composite-out")
+                debugColorReadback(device, if (customColor0()) extraTextures.getValue(0)[banks[0]] else tempTex!!, "b-composite-out")
                 debugColorReadback(device, main.colorTexture!!, "c-screen-final")
                 dev.vertex.Vertex.log.info("[Vertex] dbg frame={} paused={}", dbgFrame, Minecraft.getInstance().isPaused)
             }
@@ -179,8 +195,10 @@ object PackChain {
         extraViews.values.forEach { pair -> pair.forEach(GpuTextureView::close) }
         extraTextures.values.forEach { pair -> pair.forEach(GpuTexture::close) }
         extraViews.clear(); extraTextures.clear()
-        tempTex = device.createTexture({ "vertex-temp" }, GpuTexture.USAGE_TEXTURE_BINDING or GpuTexture.USAGE_RENDER_ATTACHMENT, GpuFormat.RGBA8_UNORM, width, height, 1, 1)
-        tempView = device.createTextureView(tempTex!!)
+        if (!customColor0()) {
+            tempTex = device.createTexture({ "vertex-temp" }, GpuTexture.USAGE_TEXTURE_BINDING or GpuTexture.USAGE_RENDER_ATTACHMENT, GpuFormat.RGBA8_UNORM, width, height, 1, 1)
+            tempView = device.createTextureView(tempTex!!)
+        }
         normalTex = device.createTexture({ "vertex-normals" }, GpuTexture.USAGE_TEXTURE_BINDING or GpuTexture.USAGE_RENDER_ATTACHMENT, GpuFormat.RGBA8_UNORM, width, height, 1, 1)
         normalView = device.createTextureView(normalTex!!)
         depthTex = device.createTexture({ "vertex-depth" }, GpuTexture.USAGE_TEXTURE_BINDING or GpuTexture.USAGE_COPY_DST, GpuFormat.D32_FLOAT, width, height, 1, 1)
@@ -190,12 +208,23 @@ object PackChain {
     }
 
     private fun ensurePipelines(device: com.mojang.renderpearl.api.device.GpuDevice) {
-        if (screenPrograms.isNotEmpty() && blit != null && (!needsNormals || normals != null && builtForW == w && builtForH == h)) return
+        if (screenPrograms.isNotEmpty() && blit != null && (!customColor0() || sceneToColor0 != null) &&
+            (!needsNormals || normals != null && builtForW == w && builtForH == h)) return
         val runDir = Minecraft.getInstance().gameDirectory.toPath()
         val packRoot = PackRuntime.root(runDir)
         val programs = PackFrontend.loadScreenChain(packRoot, PackRuntime.options())
+        val semantics = PackSemanticsParser.load(packRoot, PackRuntime.options())
         needsNormals = programs.any { "normalsTex" in it.samplers }
-        activeColors = (programs.flatMap { it.outputs } + programs.flatMap { it.samplers }.mapNotNull(::colorId)).toSet()
+        activeColors = (programs.flatMap { it.outputs } + programs.flatMap { it.samplers }.mapNotNull(::colorId) +
+            semantics.flips.values.flatMap(Map<Int, Boolean>::keys)).toSet()
+        enforceMemoryBudget(semantics.colors.map { it.format })
+        colorFormats = semantics.colors.map { gpuFormat(it.format) }
+        if (customColor0()) {
+            tempView?.close(); tempTex?.close(); tempView = null; tempTex = null
+        }
+        colorClears = semantics.colors.mapIndexed { id, setting ->
+            if (!setting.clear) null else (setting.clearColor ?: if (id == 1) WHITE else ZERO).let(::vector)
+        }
         createExtraColors(device)
         dev.vertex.Vertex.log.info("[Vertex] screen chain loaded ({}/{}): {}", w, h, programs.map { it.name })
 
@@ -228,9 +257,13 @@ object PackChain {
                 com.mojang.renderpearl.api.pipeline.ShaderType.FRAGMENT -> LegacyTranslator.fragment(program)
                 else -> null
             } }
-            ScreenProgram(program.name, compile(device, programSource, vs, fs, layout, program.outputs.size), samplers, program.outputs)
+            ScreenProgram(program.name, compile(device, programSource, vs, fs, layout,
+                program.outputs.map(colorFormats::get)), samplers, program.outputs, semantics.flips[program.name].orEmpty())
         }
         if (blit == null) blit = compile(device, source, id("pack/post.v"), id("pack/blit.f"), BindGroupLayouts.IN_SAMPLER)
+        if (customColor0() && sceneToColor0 == null) sceneToColor0 = compile(
+            device, source, id("pack/post.v"), id("pack/blit.f"), BindGroupLayouts.IN_SAMPLER, listOf(colorFormats[0]),
+        )
 
         builtForW = w; builtForH = h
     }
@@ -242,17 +275,18 @@ object PackChain {
     }
 
     private fun colorView(id: Int, bank: Int, scene: GpuTextureView): GpuTextureView = when {
+        id == 0 && customColor0() -> extraViews.getValue(0)[bank]
         id == 0 && bank == 0 -> scene
         id == 0 -> tempView!!
         else -> extraViews.getValue(id)[bank]
     }
 
     private fun createExtraColors(device: com.mojang.renderpearl.api.device.GpuDevice) {
-        (activeColors - 0).filterNot(extraTextures::containsKey).forEach { id ->
+        activeColors.filter { it != 0 || customColor0() }.filterNot(extraTextures::containsKey).forEach { id ->
             val textures = Array(2) { bank -> device.createTexture(
                 { "vertex-colortex$id-$bank" },
                 GpuTexture.USAGE_TEXTURE_BINDING or GpuTexture.USAGE_RENDER_ATTACHMENT or GpuTexture.USAGE_COPY_DST,
-                GpuFormat.RGBA8_UNORM, w, h, 1, 1,
+                colorFormats[id], w, h, 1, 1,
             ) }
             extraTextures[id] = textures
             extraViews[id] = Array(2) { device.createTextureView(textures[it]) }
@@ -265,25 +299,41 @@ object PackChain {
         else -> COLORTEX.matchEntire(name)?.groupValues?.get(1)?.toInt()
     }
 
+    private fun customColor0() = colorFormats[0] != GpuFormat.RGBA8_UNORM
+
+    private fun enforceMemoryBudget(formats: List<ColorFormat>) {
+        val allocations = activeColors.flatMap { id ->
+            val copies = if (id == 0 && formats[id] == ColorFormat.RGBA8) 1 else 2
+            List(copies) { bank -> ImageAllocation("colortex$id-$bank", w, h, formats[id].bytesPerPixel,
+                if (id == 0) ImageClass.CRITICAL else ImageClass.NON_CRITICAL) }
+        } + listOf(
+            ImageAllocation("depthtex0", w, h, 4, ImageClass.CRITICAL),
+            ImageAllocation("normalsTex", w, h, 4, ImageClass.NON_CRITICAL),
+        )
+        val budgetMiB = System.getProperty("vertex.memoryBudgetMiB")?.toLongOrNull() ?: 512L
+        require(budgetMiB in 64..16384) { "vertex.memoryBudgetMiB must be between 64 and 16384" }
+        val plan = MemoryBudgetGovernor.plan(allocations, budgetMiB * MIB, w, h)
+        dev.vertex.Vertex.log.info("[Vertex] pack target budget: {} MiB / {} MiB", plan.bytes / MIB, budgetMiB)
+    }
+
     private fun compile(
         device: com.mojang.renderpearl.api.device.GpuDevice,
         source: ShaderSource,
         vs: Identifier,
         fs: Identifier,
         layout: BindGroupLayout,
-        colorTargets: Int = 1,
+        colorTargets: List<GpuFormat> = listOf(GpuFormat.RGBA8_UNORM),
     ): CompiledRenderPipeline {
-        val declarative = com.mojang.renderpearl.api.pipeline.RenderPipeline.builder(RenderPipelines.GLOBALS_SNIPPET)
+        val builder = com.mojang.renderpearl.api.pipeline.RenderPipeline.builder(RenderPipelines.GLOBALS_SNIPPET)
             .withLocation(Identifier.fromNamespaceAndPath("vertex", fs.path.substringAfterLast('/')))
             .withVertexShader(vs)
             .withFragmentShader(fs)
             .withBindGroupLayout(layout)
             .withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
-            .withColorTargetStates(0, colorTargets - 1) {
-                ColorTargetState(Optional.empty(), GpuFormat.RGBA8_UNORM, ColorTargetState.WRITE_ALL)
-            }
-            .build()
-        return device.compilePipeline(declarative, source)
+        colorTargets.forEachIndexed { index, format ->
+            builder.withColorTargetState(index, ColorTargetState(Optional.empty(), format, ColorTargetState.WRITE_ALL))
+        }
+        return device.compilePipeline(builder.build(), source)
             ?: throw IllegalStateException("compile failed: ${fs.path}")
     }
 
@@ -295,10 +345,34 @@ object PackChain {
         val pipeline: CompiledRenderPipeline,
         val samplers: List<String>,
         val outputs: List<Int>,
+        val flips: Map<Int, Boolean>,
     )
 
+    private fun gpuFormat(format: ColorFormat): GpuFormat = when (format) {
+        ColorFormat.R8 -> GpuFormat.R8_UNORM; ColorFormat.RG8 -> GpuFormat.RG8_UNORM; ColorFormat.RGB8 -> GpuFormat.RGB8_UNORM; ColorFormat.RGBA8 -> GpuFormat.RGBA8_UNORM
+        ColorFormat.R8_SNORM -> GpuFormat.R8_SNORM; ColorFormat.RG8_SNORM -> GpuFormat.RG8_SNORM; ColorFormat.RGB8_SNORM -> GpuFormat.RGB8_SNORM; ColorFormat.RGBA8_SNORM -> GpuFormat.RGBA8_SNORM
+        ColorFormat.R16 -> GpuFormat.R16_UNORM; ColorFormat.RG16 -> GpuFormat.RG16_UNORM; ColorFormat.RGB16 -> GpuFormat.RGB16_UNORM; ColorFormat.RGBA16 -> GpuFormat.RGBA16_UNORM
+        ColorFormat.R16_SNORM -> GpuFormat.R16_SNORM; ColorFormat.RG16_SNORM -> GpuFormat.RG16_SNORM; ColorFormat.RGB16_SNORM -> GpuFormat.RGB16_SNORM; ColorFormat.RGBA16_SNORM -> GpuFormat.RGBA16_SNORM
+        ColorFormat.R8I -> GpuFormat.R8_SINT; ColorFormat.R8UI -> GpuFormat.R8_UINT; ColorFormat.RG8I -> GpuFormat.RG8_SINT; ColorFormat.RG8UI -> GpuFormat.RG8_UINT
+        ColorFormat.RGB8I -> GpuFormat.RGB8_SINT; ColorFormat.RGB8UI -> GpuFormat.RGB8_UINT; ColorFormat.RGBA8I -> GpuFormat.RGBA8_SINT; ColorFormat.RGBA8UI -> GpuFormat.RGBA8_UINT
+        ColorFormat.R16I -> GpuFormat.R16_SINT; ColorFormat.R16UI -> GpuFormat.R16_UINT; ColorFormat.RG16I -> GpuFormat.RG16_SINT; ColorFormat.RG16UI -> GpuFormat.RG16_UINT
+        ColorFormat.RGB16I -> GpuFormat.RGB16_SINT; ColorFormat.RGB16UI -> GpuFormat.RGB16_UINT; ColorFormat.RGBA16I -> GpuFormat.RGBA16_SINT; ColorFormat.RGBA16UI -> GpuFormat.RGBA16_UINT
+        ColorFormat.R32I -> GpuFormat.R32_SINT; ColorFormat.R32UI -> GpuFormat.R32_UINT; ColorFormat.RG32I -> GpuFormat.RG32_SINT; ColorFormat.RG32UI -> GpuFormat.RG32_UINT
+        ColorFormat.RGB32I -> GpuFormat.RGB32_SINT; ColorFormat.RGB32UI -> GpuFormat.RGB32_UINT; ColorFormat.RGBA32I -> GpuFormat.RGBA32_SINT; ColorFormat.RGBA32UI -> GpuFormat.RGBA32_UINT
+        ColorFormat.R16F -> GpuFormat.R16_FLOAT; ColorFormat.RG16F -> GpuFormat.RG16_FLOAT; ColorFormat.RGB16F -> GpuFormat.RGB16_FLOAT; ColorFormat.RGBA16F -> GpuFormat.RGBA16_FLOAT
+        ColorFormat.R32F -> GpuFormat.R32_FLOAT; ColorFormat.RG32F -> GpuFormat.RG32_FLOAT; ColorFormat.RGB32F -> GpuFormat.RGB32_FLOAT; ColorFormat.RGBA32F -> GpuFormat.RGBA32_FLOAT
+        ColorFormat.RGBA2, ColorFormat.RGBA4, ColorFormat.RGB5_A1 -> GpuFormat.RGBA8_UNORM
+        ColorFormat.R3_G3_B2, ColorFormat.RGB565 -> GpuFormat.RGB8_UNORM
+        ColorFormat.RGB10_A2 -> GpuFormat.RGB10A2_UNORM; ColorFormat.RGB10_A2UI -> GpuFormat.RGB10A2_UINT
+        ColorFormat.R11F_G11F_B10F, ColorFormat.RGB9_E5 -> GpuFormat.RG11B10_FLOAT
+    }
+
+    private fun vector(values: List<Float>) = Vector4f(values[0], values[1], values[2], values[3])
+
     private val COLORTEX = Regex("""colortex(\d|1[0-5])""")
-    private val CLEAR_COLOR = Vector4f(0f, 0f, 0f, 0f)
+    private val ZERO = listOf(0f, 0f, 0f, 0f)
+    private val WHITE = listOf(1f, 1f, 1f, 1f)
+    private const val MIB = 1024L * 1024L
 
     private const val POST_VSH = """#version 330
 #extension GL_ARB_separate_shader_objects : require

@@ -32,4 +32,16 @@ class LegacyFragmentTranslatorTest {
         assertContains(translated, "#define shadow2D")
         assertContains(translated, "vertexFragColor0 = shadow2D")
     }
+
+    @Test
+    fun `consumes framebuffer constants before GLSL compilation`() {
+        val translated = LegacyFragmentTranslator.translate("""
+            const int colortex1Format = RGBA16F;
+            const bool colortex1Clear = false;
+            const vec4 colortex1ClearColor = vec4(1.0);
+            void main() { gl_FragColor = vec4(1.0); }
+        """.trimIndent())
+
+        assertEquals(false, "colortex1" in translated)
+    }
 }
