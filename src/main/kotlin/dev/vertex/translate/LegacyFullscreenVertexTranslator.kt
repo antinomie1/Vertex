@@ -9,6 +9,7 @@ object LegacyFullscreenVertexTranslator {
         var body = source
             .replace(Regex("""^\s*#version[^\n]*""", RegexOption.MULTILINE), "")
             .replace(Regex("""^\s*#extension[^\n]*""", RegexOption.MULTILINE), "")
+        body = LegacyUniformTranslator.translate(body)
         body = varying.replace(body) {
             "layout(location = ${location++}) out ${it.groupValues[1]} ${it.groupValues[2]};"
         }

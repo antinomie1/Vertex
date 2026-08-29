@@ -3,6 +3,7 @@ package dev.vertex.frontend
 import java.nio.file.Files
 import java.nio.file.Path
 import dev.vertex.translate.ShaderPreprocessor
+import dev.vertex.translate.LegacyUniformTranslator
 
 /**
  * Minimal pack frontend for terrain and composite/final programs.
@@ -14,6 +15,7 @@ data class LoadedProgram(
     val varyingName: String?,
     val samplers: List<String>,
     val outputs: List<Int>,
+    val uniforms: Set<String>,
 )
 
 object PackFrontend {
@@ -47,7 +49,8 @@ object PackFrontend {
         val samplers = SAMPLER.findAll(fsh)
             .map { it.groupValues[1] }.toList()
 
-        return LoadedProgram(name, vsh, fsh, varying, samplers, outputs)
+        return LoadedProgram(name, vsh, fsh, varying, samplers, outputs,
+            LegacyUniformTranslator.uniforms(vsh) + LegacyUniformTranslator.uniforms(fsh))
     }
 
     fun loadTerrain(packRoot: Path, options: Map<String, String> = emptyMap()): LoadedProgram {
@@ -58,7 +61,7 @@ object PackFrontend {
         val fsh = if (Files.isRegularFile(fshFile)) ShaderPreprocessor(listOf(sh), options).process(fshFile) else SamplePack.TERRAIN_FSH
         val samplers = SAMPLER.findAll(fsh)
             .map { it.groupValues[1] }.toList()
-        return LoadedProgram("gbuffers_terrain", vsh, fsh, null, samplers, outputs(fsh))
+        return LoadedProgram("gbuffers_terrain", vsh, fsh, null, samplers, outputs(fsh), emptySet())
     }
 
     private fun outputs(source: String): List<Int> {

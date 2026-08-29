@@ -4,7 +4,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 enum class UniformType(val alignment: Int, val bytes: Int) {
-    FLOAT(4, 4), INT(4, 4), VEC2(8, 8), VEC3(16, 12), VEC4(16, 16), MAT4(16, 64),
+    FLOAT(4, 4), INT(4, 4), VEC2(8, 8), IVEC2(8, 8), VEC3(16, 12), VEC4(16, 16), MAT4(16, 64),
 }
 
 data class UniformMember(val name: String, val type: UniformType, val count: Int, val offset: Int, val stride: Int)
@@ -42,15 +42,49 @@ class UniformHeap(val layout: UniformLayout, val slots: Int = 2) {
 
     fun putFloats(slot: Int, name: String, values: FloatArray) {
         val member = layout.member(name)
-        require(member.type != UniformType.INT && values.size * Float.SIZE_BYTES <= member.stride * member.count)
+        require(member.type != UniformType.INT && member.type != UniformType.IVEC2 && values.size * Float.SIZE_BYTES <= member.stride * member.count)
         var offset = segmentOffset(slot) + member.offset
         values.forEach { data.putFloat(offset, it); offset += Float.SIZE_BYTES }
+    }
+
+    fun putFloat(slot: Int, name: String, value: Float) {
+        val member = layout.member(name)
+        require(member.type == UniformType.FLOAT)
+        data.putFloat(segmentOffset(slot) + member.offset, value)
+    }
+
+    fun putVec2(slot: Int, name: String, x: Float, y: Float) {
+        val member = layout.member(name)
+        require(member.type == UniformType.VEC2)
+        val offset = segmentOffset(slot) + member.offset
+        data.putFloat(offset, x); data.putFloat(offset + Float.SIZE_BYTES, y)
+    }
+
+    fun putVec3(slot: Int, name: String, x: Float, y: Float, z: Float) {
+        val member = layout.member(name)
+        require(member.type == UniformType.VEC3)
+        val offset = segmentOffset(slot) + member.offset
+        data.putFloat(offset, x); data.putFloat(offset + Float.SIZE_BYTES, y); data.putFloat(offset + 2 * Float.SIZE_BYTES, z)
     }
 
     fun putInt(slot: Int, name: String, value: Int) {
         val member = layout.member(name)
         require(member.type == UniformType.INT && member.count == 1)
         data.putInt(segmentOffset(slot) + member.offset, value)
+    }
+
+    fun putInts(slot: Int, name: String, values: IntArray) {
+        val member = layout.member(name)
+        require(member.type == UniformType.IVEC2 && values.size * Int.SIZE_BYTES <= member.stride * member.count)
+        var offset = segmentOffset(slot) + member.offset
+        values.forEach { data.putInt(offset, it); offset += Int.SIZE_BYTES }
+    }
+
+    fun putIVec2(slot: Int, name: String, x: Int, y: Int) {
+        val member = layout.member(name)
+        require(member.type == UniformType.IVEC2)
+        val offset = segmentOffset(slot) + member.offset
+        data.putInt(offset, x); data.putInt(offset + Int.SIZE_BYTES, y)
     }
 
     fun view(slot: Int): ByteBuffer = data.duplicate().apply {

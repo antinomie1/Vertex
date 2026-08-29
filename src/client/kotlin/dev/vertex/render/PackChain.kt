@@ -23,7 +23,9 @@ import dev.vertex.frontend.ColorFormat
 import dev.vertex.runtime.ImageAllocation
 import dev.vertex.runtime.ImageClass
 import dev.vertex.runtime.MemoryBudgetGovernor
+import dev.vertex.runtime.UniformHeap
 import dev.vertex.translate.LegacyTranslator
+import dev.vertex.translate.PackUniformCatalog
 import net.minecraft.client.Minecraft
 import net.minecraft.client.renderer.BindGroupLayouts
 import net.minecraft.client.renderer.RenderPipelines
@@ -32,6 +34,9 @@ import java.util.Optional
 import java.nio.file.Files
 import java.nio.file.Path
 import org.joml.Vector4f
+import org.joml.Matrix4f
+import kotlin.math.cos
+import kotlin.math.sin
 
 /**
  * 包运行时核心：colortex0 + depthtex0 + normalsTex 三通道复合链。
@@ -70,6 +75,16 @@ object PackChain {
     private var staticBytes = 0L
     private val banks = IntArray(16)
     private var frameReady = false
+    private val uniformHeap = UniformHeap(PackUniformCatalog.layout)
+    private var uniformBuffer: GpuBuffer? = null
+    private var uniformSlot = 0
+    private var frameCounter = 0
+    private var lastFrameNanos = System.nanoTime()
+    private var frameTimeCounter = 0f
+    private val previousCamera = FloatArray(3)
+    private val previousModelView = Matrix4f()
+    private val inverseMatrix = Matrix4f()
+    private val matrixScratch = FloatArray(16)
 
     fun prepare() {
         if (failed) return
@@ -147,6 +162,7 @@ object PackChain {
             ensureSize(device, main.width, main.height)
             ensurePipelines(device)
             val encoder = device.createCommandEncoder()
+            updateUniforms(encoder)
             for ((id, pair) in extraTextures) colorClears[id]?.let { color ->
                 for (texture in pair) encoder.clearColorTexture(texture, color)
             }
@@ -175,6 +191,10 @@ object PackChain {
             program.samplers.forEach { name ->
                 rp.setUniform(name, program.staticSamplers[name] ?: samplerView(name, banks, scene), sampler)
             }
+            if (program.uniforms.isNotEmpty()) rp.setUniform(
+                "VertexPackUniforms",
+                uniformBuffer!!.slice(uniformHeap.segmentOffset(uniformSlot).toLong(), uniformHeap.layout.segmentBytes.toLong()),
+            )
         }
         for (id in program.outputs) if (program.flips[id] != false) banks[id] = banks[id] xor 1
         for ((id, flip) in program.flips) if (flip) banks[id] = banks[id] xor 1
@@ -326,6 +346,7 @@ object PackChain {
             }
             val layout = BindGroupLayout.builder().also { builder ->
                 samplers.forEach { builder.withUniform(it, UniformType.COMBINED_IMAGE_SAMPLER) }
+                if (program.uniforms.isNotEmpty()) builder.withUniform("VertexPackUniforms", UniformType.UNIFORM_BUFFER)
             }.build()
             val vs = id("pack/${program.name}.v")
             val fs = id("pack/${program.name}.f")
@@ -336,12 +357,20 @@ object PackChain {
             } }
             ScreenProgram(program.name, compile(device, programSource, vs, fs, layout,
                 program.outputs.map(colorFormats::get)), samplers, program.outputs,
-                semantics.flips[program.name].orEmpty(), staticSamplers)
+                semantics.flips[program.name].orEmpty(), staticSamplers, program.uniforms)
             }
             earlyPrograms = compiled.filter { it.name == "setup" || it.name == "begin" }
             screenPrograms = compiled - earlyPrograms.toSet()
         }
         if (blit == null) blit = compile(device, source, id("pack/post.v"), id("pack/blit.f"), BindGroupLayouts.IN_SAMPLER)
+        if (programs.any { it.uniforms.isNotEmpty() } && uniformBuffer == null) {
+            uniformBuffer = device.createBuffer(
+                { "vertex-pack-uniforms" }, GpuBuffer.USAGE_UNIFORM or GpuBuffer.USAGE_COPY_DST,
+                uniformHeap.layout.segmentBytes.toLong() * 2L,
+            )
+            dev.vertex.Vertex.log.info("[Vertex] uniform heap armed: {} used members, {} bytes x2 slots",
+                programs.flatMap { it.uniforms }.distinct().size, uniformHeap.layout.segmentBytes)
+        }
         if (customColor0() && sceneToColor0 == null) sceneToColor0 = compile(
             device, source, id("pack/post.v"), id("pack/blit.f"), BindGroupLayouts.IN_SAMPLER, listOf(colorFormats[0]),
         )
@@ -383,6 +412,56 @@ object PackChain {
     }
 
     private fun customColor0() = colorFormats[0] != GpuFormat.RGBA8_UNORM
+
+    private fun updateUniforms(encoder: CommandEncoder) {
+        if (uniformBuffer == null) return
+        uniformSlot = frameCounter and 1
+        val now = System.nanoTime()
+        val frameTime = ((now - lastFrameNanos) / 1_000_000_000f).coerceIn(0f, 1f)
+        lastFrameNanos = now
+        frameTimeCounter = (frameTimeCounter + frameTime) % 3600f
+        val mc = Minecraft.getInstance()
+        val camera = mc.gameRenderer.mainCamera().position()
+        val clock = mc.level?.defaultClockTime ?: 0L
+        val day = Math.floorMod(clock, 24000L).toInt()
+        val angle = day / 24000f * (Math.PI * 2.0).toFloat()
+        uniformHeap.putFloat(uniformSlot, "near", 0.05f)
+        uniformHeap.putFloat(uniformSlot, "far", mc.options.effectiveRenderDistance * 16f)
+        uniformHeap.putFloat(uniformSlot, "viewWidth", w.toFloat())
+        uniformHeap.putFloat(uniformSlot, "viewHeight", h.toFloat())
+        uniformHeap.putFloat(uniformSlot, "aspectRatio", w.toFloat() / h)
+        uniformHeap.putFloat(uniformSlot, "frameTime", frameTime)
+        uniformHeap.putFloat(uniformSlot, "frameTimeCounter", frameTimeCounter)
+        uniformHeap.putFloat(uniformSlot, "eyeAltitude", camera.y.toFloat())
+        uniformHeap.putFloat(uniformSlot, "sunAngle", day / 24000f)
+        uniformHeap.putFloat(uniformSlot, "shadowAngle", day / 24000f)
+        uniformHeap.putInt(uniformSlot, "frameCounter", frameCounter)
+        uniformHeap.putInt(uniformSlot, "worldTime", day)
+        uniformHeap.putInt(uniformSlot, "worldDay", (clock / 24000L).toInt())
+        uniformHeap.putInt(uniformSlot, "moonPhase", Math.floorMod(clock / 24000L, 8L).toInt())
+        uniformHeap.putVec3(uniformSlot, "cameraPosition", camera.x.toFloat(), camera.y.toFloat(), camera.z.toFloat())
+        uniformHeap.putVec3(uniformSlot, "previousCameraPosition", previousCamera[0], previousCamera[1], previousCamera[2])
+        previousCamera[0] = camera.x.toFloat(); previousCamera[1] = camera.y.toFloat(); previousCamera[2] = camera.z.toFloat()
+        uniformHeap.putVec3(uniformSlot, "sunPosition", cos(angle) * 100f, sin(angle) * 100f, 0f)
+        uniformHeap.putVec3(uniformSlot, "moonPosition", -cos(angle) * 100f, -sin(angle) * 100f, 0f)
+        uniformHeap.putVec3(uniformSlot, "upPosition", 0f, 100f, 0f)
+        uniformHeap.putIVec2(uniformSlot, "eyeBrightness", 240, 240)
+        uniformHeap.putIVec2(uniformSlot, "eyeBrightnessSmooth", 240, 240)
+        val modelView = RenderSystem.getModelViewMatrixCopy()
+        putMatrix("gbufferModelView", modelView)
+        putMatrix("gbufferModelViewInverse", inverseMatrix.set(modelView).invert())
+        putMatrix("gbufferPreviousModelView", previousModelView)
+        previousModelView.set(modelView)
+        IDENTITY_MATRICES.forEach { putMatrix(it, IDENTITY) }
+        encoder.writeToBuffer(
+            uniformBuffer!!.slice(uniformHeap.segmentOffset(uniformSlot).toLong(), uniformHeap.layout.segmentBytes.toLong()),
+            uniformHeap.view(uniformSlot),
+        )
+        frameCounter++
+    }
+
+    private fun putMatrix(name: String, matrix: Matrix4f) =
+        uniformHeap.putFloats(uniformSlot, name, matrix.get(matrixScratch))
 
     private fun staticSampler(
         device: com.mojang.renderpearl.api.device.GpuDevice,
@@ -489,6 +568,7 @@ object PackChain {
         val outputs: List<Int>,
         val flips: Map<Int, Boolean>,
         val staticSamplers: Map<String, GpuTextureView>,
+        val uniforms: Set<String>,
     )
 
     private fun gpuFormat(format: ColorFormat): GpuFormat = when (format) {
@@ -514,6 +594,9 @@ object PackChain {
 
     private val COLORTEX = Regex("""colortex(\d|1[0-5])""")
     private val DEPTH = Regex("""depthtex([0-2])""")
+    private val IDENTITY = Matrix4f()
+    private val IDENTITY_MATRICES = arrayOf("gbufferProjection", "gbufferProjectionInverse", "gbufferPreviousProjection",
+        "shadowModelView", "shadowModelViewInverse", "shadowProjection", "shadowProjectionInverse")
     private val ZERO = listOf(0f, 0f, 0f, 0f)
     private val WHITE = listOf(1f, 1f, 1f, 1f)
     private const val MIB = 1024L * 1024L

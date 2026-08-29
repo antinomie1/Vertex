@@ -30,4 +30,18 @@ class UniformHeapTest {
         assertEquals(9, heap.view(1).getInt(0))
         assertFailsWith<IllegalArgumentException> { heap.view(2) }
     }
+
+    @Test
+    fun `typed writers preserve float and integer vector representation`() {
+        val layout = UniformLayoutBuilder(32)
+            .add("size", UniformType.VEC2)
+            .add("light", UniformType.IVEC2)
+            .build()
+        val heap = UniformHeap(layout, 1)
+        heap.putVec2(0, "size", 1920f, 1080f)
+        heap.putIVec2(0, "light", 15, 7)
+        val view = heap.view(0)
+        assertEquals(1920f, view.getFloat(layout.member("size").offset))
+        assertEquals(7, view.getInt(layout.member("light").offset + 4))
+    }
 }

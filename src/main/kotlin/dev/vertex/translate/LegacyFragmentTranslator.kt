@@ -10,6 +10,7 @@ object LegacyFragmentTranslator {
             .replace(Regex("""^\s*#version[^\n]*""", RegexOption.MULTILINE), "")
             .replace(Regex("""^\s*#extension[^\n]*""", RegexOption.MULTILINE), "")
             .replace(BUFFER_DIRECTIVE, "")
+        body = LegacyUniformTranslator.translate(body)
         var location = 0
         body = varying.replace(body) { match ->
             "layout(location = ${location++}) in ${match.groupValues[1]} ${match.groupValues[2]};"
