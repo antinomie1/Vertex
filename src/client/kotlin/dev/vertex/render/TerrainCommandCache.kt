@@ -15,6 +15,7 @@ import dev.vertex.mixin.DrawIndirectAccessor
 import org.lwjgl.PointerBuffer
 import java.nio.ByteBuffer
 import java.nio.IntBuffer
+import java.util.concurrent.atomic.AtomicLong
 import java.util.function.Supplier
 
 /** Replays the stable RenderPearl command bundle while its visible-set owner is unchanged. */
@@ -23,6 +24,7 @@ object TerrainCommandCache {
     private var replace = 0
     private var hits = 0L
     private var records = 0L
+    private val epoch = AtomicLong()
 
     @JvmStatic
     @Suppress("CAST_NEVER_SUCCEEDS") // Mixin adds both accessor interfaces at runtime.
@@ -36,7 +38,8 @@ object TerrainCommandCache {
         val indirect = sections as DrawIndirectAccessor
         val groups = indirect.`vertex$drawGroups`()
         val infos = indirect.`vertex$chunkSectionInfos`()
-        val cached = bundles.firstOrNull { it.matches(terrain, groups, infos, sampler, atlas, wireframe) }
+        val currentEpoch = epoch.get()
+        val cached = bundles.firstOrNull { it.matches(currentEpoch, terrain, groups, infos, sampler, atlas, wireframe) }
         if (cached != null) {
             cached.commands.forEach { it(pass) }
             hits++
@@ -44,7 +47,7 @@ object TerrainCommandCache {
             val bundle = bundles[replace++ % bundles.size]
             bundle.commands.clear()
             sections.renderGroup(group, RecordingPass(pass, bundle.commands), sampler, atlas, wireframe)
-            bundle.set(terrain, groups, infos, sampler, atlas, wireframe)
+            bundle.set(currentEpoch, terrain, groups, infos, sampler, atlas, wireframe)
             records++
         }
         val interval = System.getProperty("vertex.sscaLogFrames")?.toLongOrNull()?.coerceAtLeast(1) ?: 600
@@ -55,9 +58,10 @@ object TerrainCommandCache {
     }
 
     @JvmStatic
-    fun invalidate() = bundles.forEach(Bundle::clear)
+    fun invalidate() { epoch.incrementAndGet() }
 
     private class Bundle {
+        var epoch = Long.MIN_VALUE
         var terrain: GpuBufferSlice? = null
         var groups: Any? = null
         var infos: GpuBufferSlice? = null
@@ -65,16 +69,17 @@ object TerrainCommandCache {
         var atlas: GpuTextureView? = null
         var wireframe = false
         val commands = ArrayList<(RenderPass) -> Unit>(24)
-        fun matches(terrain: GpuBufferSlice, groups: Any, infos: GpuBufferSlice, sampler: GpuSampler,
+        fun matches(epoch: Long, terrain: GpuBufferSlice, groups: Any, infos: GpuBufferSlice, sampler: GpuSampler,
                     atlas: GpuTextureView, wireframe: Boolean) = commands.isNotEmpty() && this.terrain == terrain &&
+            this.epoch == epoch &&
             this.groups == groups && this.infos == infos && this.sampler === sampler && this.atlas === atlas &&
             this.wireframe == wireframe
-        fun set(terrain: GpuBufferSlice, groups: Any, infos: GpuBufferSlice, sampler: GpuSampler,
+        fun set(epoch: Long, terrain: GpuBufferSlice, groups: Any, infos: GpuBufferSlice, sampler: GpuSampler,
                 atlas: GpuTextureView, wireframe: Boolean) {
+            this.epoch = epoch
             this.terrain = terrain; this.groups = groups; this.infos = infos
             this.sampler = sampler; this.atlas = atlas; this.wireframe = wireframe
         }
-        fun clear() { terrain = null; groups = null; infos = null; commands.clear() }
     }
 
     private class RecordingPass(private val out: RenderPass, private val log: MutableList<(RenderPass) -> Unit>) : RenderPass {

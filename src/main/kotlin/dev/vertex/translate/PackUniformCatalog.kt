@@ -77,6 +77,6 @@ object LegacyUniformTranslator {
     }
 
     private val DECLARATION = Regex(
-        """\buniform\s+(float|int|bool|vec[234]|ivec[234]|mat[234])\s+(\w+)\s*;""",
+        """\buniform\s+(?:(?:lowp|mediump|highp)\s+)?(float|int|bool|vec[234]|ivec[234]|mat[234])\s+(\w+)\s*;""",
     )
 }

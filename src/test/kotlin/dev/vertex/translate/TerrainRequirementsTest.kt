@@ -13,4 +13,8 @@ class TerrainRequirementsTest {
         """.trimIndent()
         assertEquals(TerrainRequirements(true, true, true, false), TerrainRequirementScanner.scan(source))
     }
+
+    @Test fun `scans precision-qualified attributes`() {
+        assertEquals(true, TerrainRequirementScanner.scan("attribute mediump vec4 mc_midTexCoord;").midTexCoord)
+    }
 }

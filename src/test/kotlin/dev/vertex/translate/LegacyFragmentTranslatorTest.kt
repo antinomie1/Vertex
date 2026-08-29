@@ -69,4 +69,23 @@ class LegacyFragmentTranslatorTest {
             LegacyFragmentTranslator.translate(source, listOf(ColorNumericType.FLOAT))
         }
     }
+
+    @Test
+    fun `drops precision qualifiers and modernizes projected texture calls`() {
+        val translated = LegacyFragmentTranslator.translate(
+            "varying highp vec2 uv; uniform mediump sampler2D tex; void main() { gl_FragColor = texture2DProj(tex, vec3(uv, 1.0)); }",
+        )
+        assertContains(translated, "layout(location = 0) in vec2 uv;")
+        assertContains(translated, "uniform mediump sampler2D tex;")
+        assertContains(translated, "textureProj(tex")
+    }
+
+    @Test
+    fun `modernizes legacy shadow projection helper`() {
+        val translated = LegacyFragmentTranslator.translate(
+            "uniform sampler2DShadow shadowtex0; void main() { gl_FragColor = shadow2DProj(shadowtex0, vec4(0.5)); }",
+        )
+        assertContains(translated, "#define shadow2DProj")
+        assertContains(translated, "vertexFragColor0 = shadow2DProj")
+    }
 }

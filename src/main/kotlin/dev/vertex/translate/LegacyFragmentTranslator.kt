@@ -4,7 +4,7 @@ import dev.vertex.frontend.ColorNumericType
 
 /** Stateless GLSL 1.20 fragment syntax modernization; runtime bindings are validated separately. */
 object LegacyFragmentTranslator {
-    private val varying = Regex("""\bvarying\s+(\w+)\s+(\w+)\s*;""")
+    private val varying = Regex("""\bvarying\s+(?:(?:lowp|mediump|highp)\s+)?(\w+)\s+(\w+)\s*;""")
     private val fragData = Regex("""\bgl_FragData\s*\[\s*(\d+)\s*]""")
 
     fun translate(source: String, outputTypes: List<ColorNumericType> = emptyList()): String {
@@ -18,7 +18,9 @@ object LegacyFragmentTranslator {
         body = varying.replace(body) { match ->
             "layout(location = ${location++}) in ${match.groupValues[1]} ${match.groupValues[2]};"
         }
-        body = body.replace(Regex("""\btexture(?:2D|3D)\s*\("""), "texture(")
+        body = body.replace(TEXTURE_CALL) {
+            (if (it.groupValues[1] == "texture2DProj") "textureProj" else "texture") + "("
+        }
 
         val legacyOutputs = fragData.findAll(body).map { it.groupValues[1].toInt() }.toMutableSet()
         if ("gl_FragColor" in body) legacyOutputs += 0
@@ -44,7 +46,10 @@ object LegacyFragmentTranslator {
         return buildString {
             appendLine("#version 330")
             appendLine("#extension GL_ARB_separate_shader_objects : require")
-            if ("shadow2D" in body) appendLine("#define shadow2D(s, c) vec4(float((c).z <= texture((s), (c).xy).r))")
+            if ("shadow2D" in body) {
+                appendLine("#define shadow2D(s, c) vec4(float((c).z <= texture((s), (c).xy).r))")
+                appendLine("#define shadow2DProj(s, c) vec4(float((c).z / (c).w <= texture((s), (c).xy / (c).w).r))")
+            }
             legacyOutputs.sorted().forEach { location ->
                 appendLine("layout(location = $location) out ${outputType(outputTypes.getOrElse(location) { ColorNumericType.FLOAT })} vertexFragColor$location;")
             }
@@ -65,6 +70,7 @@ object LegacyFragmentTranslator {
     private val ASSIGNMENT = Regex("""\bgl_FragData\s*\[\s*(\d+)\s*]\s*=\s*([^;]+);""")
     private val FRAG_COLOR_ASSIGNMENT = Regex("""\bgl_FragColor\s*=\s*([^;]+);""")
     private val MODERN_OUTPUT = Regex("""layout\s*\(\s*location\s*=\s*(\d+)\s*\)\s*out\s+(vec4|ivec4|uvec4)\s+\w+\s*;""")
+    private val TEXTURE_CALL = Regex("""\b(texture2DProj|texture2D|texture3D|textureCube)\s*\(""")
 
     private val BUFFER_DIRECTIVE = Regex(
         """^\s*const\s+(?:int|bool|vec4)\s+\w+(?:Format|Clear|ClearColor)\s*=.*;\s*$""",

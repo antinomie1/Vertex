@@ -83,7 +83,7 @@ object PackFrontend {
         return targets
     }
 
-    private val SAMPLER = Regex("""uniform\s+[iu]?sampler\w*\s+(\w+)\s*;""")
+    private val SAMPLER = Regex("""uniform\s+(?:(?:lowp|mediump|highp)\s+)?[iu]?sampler\w*\s+(\w+)\s*;""")
     private val SCREEN_PROGRAM = Regex("""(?:setup|begin|prepare\d*|deferred\d*|composite\d*|final)""")
     private val DRAW_BUFFERS = Regex("""DRAWBUFFERS\s*:\s*([0-9A-Fa-f]+)""")
     private val RENDER_TARGETS = Regex("""RENDERTARGETS\s*:\s*([0-9, ]+)""")

@@ -30,4 +30,14 @@ class TerrainTranslatorTest {
         assertContains(fragment, "texture(Sampler0, vec2(0.5))")
         assertFalse(fragment.contains("Sampler0(Sampler0"))
     }
+
+    @Test fun `modernizes projected texture calls in terrain stages`() {
+        val program = LoadedProgram(
+            "terrain-proj",
+            "#version 120\nvoid main() { gl_Position = ftransform(); }",
+            "#version 120\nuniform sampler2D texture; void main() { gl_FragData[0] = texture2DProj(texture, vec3(0.5)); }",
+            null, emptyList(), listOf(0), emptySet(),
+        )
+        assertContains(LegacyTranslator.terrainFragment(program), "textureProj(Sampler0")
+    }
 }

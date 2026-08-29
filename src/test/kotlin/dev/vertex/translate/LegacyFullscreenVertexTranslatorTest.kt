@@ -22,4 +22,12 @@ class LegacyFullscreenVertexTranslatorTest {
         assertContains(translated, "gl_VertexIndex")
         assertContains(translated, "mat4(1.0) * vec4(vertexUv")
     }
+
+    @Test
+    fun `accepts precision-qualified varyings`() {
+        val translated = LegacyFullscreenVertexTranslator.translate(
+            "varying lowp vec2 uv; void main() { uv = gl_MultiTexCoord0.xy; gl_Position = ftransform(); }",
+        )
+        assertContains(translated, "layout(location = 0) out vec2 uv;")
+    }
 }

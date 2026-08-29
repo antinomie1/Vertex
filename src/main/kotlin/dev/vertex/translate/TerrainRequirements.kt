@@ -19,5 +19,5 @@ object TerrainRequirementScanner {
         )
     }
 
-    private val ATTRIBUTE = Regex("""\battribute\s+\w+\s+(\w+)\s*;""")
+    private val ATTRIBUTE = Regex("""\battribute\s+(?:(?:lowp|mediump|highp)\s+)?\w+\s+(\w+)\s*;""")
 }

@@ -28,4 +28,9 @@ class PackUniformCatalogTest {
         val source = "uniform bool hideGUI; uniform ivec3 currentDate; uniform mat3 gbufferNormal;"
         assertEquals(setOf("hideGUI", "currentDate", "gbufferNormal"), LegacyUniformTranslator.uniforms(source))
     }
+
+    @Test
+    fun `accepts precision-qualified pack uniforms`() {
+        assertEquals(setOf("viewWidth"), LegacyUniformTranslator.uniforms("uniform highp float viewWidth;"))
+    }
 }

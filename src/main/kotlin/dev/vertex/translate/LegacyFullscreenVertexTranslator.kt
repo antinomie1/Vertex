@@ -2,7 +2,7 @@ package dev.vertex.translate
 
 /** Rewrites legacy fullscreen vertex programs while preserving their varying calculations. */
 object LegacyFullscreenVertexTranslator {
-    private val varying = Regex("""\bvarying\s+(\w+)\s+(\w+)\s*;""")
+    private val varying = Regex("""\bvarying\s+(?:(?:lowp|mediump|highp)\s+)?(\w+)\s+(\w+)\s*;""")
 
     fun translate(source: String): String {
         var location = 0
