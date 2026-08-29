@@ -1,6 +1,7 @@
 package dev.vertex.translate
 
 import dev.vertex.frontend.LoadedProgram
+import dev.vertex.frontend.ColorFormat
 
 /**
  * 旧语法→Vulkan GLSL 规则表 v0（DESIGN.md M2 的最小实现集）：
@@ -15,8 +16,8 @@ object LegacyTranslator {
         return LegacyFullscreenVertexTranslator.translate(program.vertexSource)
     }
 
-    fun fragment(program: LoadedProgram): String {
-        return LegacyFragmentTranslator.translate(program.fragmentSource)
+    fun fragment(program: LoadedProgram, formats: List<ColorFormat> = emptyList()): String {
+        return LegacyFragmentTranslator.translate(program.fragmentSource, formats.map(ColorFormat::numericType))
     }
     fun terrainVertex(program: LoadedProgram): String {
         return """#version 330

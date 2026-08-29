@@ -1,8 +1,10 @@
 package dev.vertex.translate
 
+import dev.vertex.frontend.ColorNumericType
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 
 class LegacyFragmentTranslatorTest {
     @Test
@@ -43,5 +45,26 @@ class LegacyFragmentTranslatorTest {
         """.trimIndent())
 
         assertEquals(false, "colortex1" in translated)
+    }
+
+    @Test
+    fun `emits integer outputs matching attachment numeric types`() {
+        val translated = LegacyFragmentTranslator.translate(
+            "void main() { gl_FragData[0] = vec4(7.0); gl_FragData[1] = vec4(-2.0); }",
+            listOf(ColorNumericType.UINT, ColorNumericType.SINT),
+        )
+        assertContains(translated, "out uvec4 vertexFragColor0")
+        assertContains(translated, "vertexFragColor0 = uvec4(vec4(7.0))")
+        assertContains(translated, "out ivec4 vertexFragColor1")
+    }
+
+    @Test
+    fun `preserves correctly typed modern integer outputs`() {
+        val source = "layout(location = 0) out uvec4 data; void main() { data = uvec4(3); }"
+        val translated = LegacyFragmentTranslator.translate(source, listOf(ColorNumericType.UINT))
+        assertContains(translated, "out uvec4 data")
+        assertFailsWith<IllegalArgumentException> {
+            LegacyFragmentTranslator.translate(source, listOf(ColorNumericType.FLOAT))
+        }
     }
 }

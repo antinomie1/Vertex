@@ -360,7 +360,8 @@ object PackChain {
             val fs = id("pack/${program.name}.f")
             val programSource = ShaderSource { _, type -> when (type) {
                 com.mojang.renderpearl.api.pipeline.ShaderType.VERTEX -> LegacyTranslator.vertex(program)
-                com.mojang.renderpearl.api.pipeline.ShaderType.FRAGMENT -> LegacyTranslator.fragment(program)
+                com.mojang.renderpearl.api.pipeline.ShaderType.FRAGMENT ->
+                    LegacyTranslator.fragment(program, program.outputs.map { semantics.colors[it].format })
                 else -> null
             } }
             ScreenProgram(program.name, compile(device, programSource, vs, fs, layout,

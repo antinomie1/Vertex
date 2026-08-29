@@ -24,7 +24,16 @@ enum class ColorFormat(val bytesPerPixel: Int) {
                 ?: throw IllegalArgumentException("unsupported colortex format: $token")
         }
     }
+
+    val numericType: ColorNumericType
+        get() = when {
+            name.endsWith("UI") -> ColorNumericType.UINT
+            name.endsWith("I") && !name.endsWith("F") -> ColorNumericType.SINT
+            else -> ColorNumericType.FLOAT
+        }
 }
+
+enum class ColorNumericType { FLOAT, SINT, UINT }
 
 data class ColorBufferSettings(
     val format: ColorFormat = ColorFormat.RGBA8,

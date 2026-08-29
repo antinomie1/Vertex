@@ -49,6 +49,7 @@ uniform sampler2D depthtex2;
 uniform sampler2D noisetex;
 uniform sampler2D lut;
 uniform sampler2D colortex2;
+uniform usampler2D colortex3;
 uniform float viewWidth;
 uniform float frameTimeCounter;
 uniform vec3 cameraPosition;
@@ -69,6 +70,7 @@ void main() {
     d += texture2D(colortex2, texcoord).r * 0.000001;
     d += (viewWidth + frameTimeCounter + cameraPosition.y) * 0.000000001;
     d += (float(currentDate.x) + gbufferNormal[0][0] + (hideGUI ? 1.0 : 0.0)) * 0.000000001;
+    d += float(texture2D(colortex3, texcoord).r) * 0.000000001;
     o = mix(o, vec3(0.55, 0.75, 1.0), smoothstep(0.006, 0.05, d) * 0.9);
     vec3 n = texture2D(normalsTex, texcoord).rgb * 2.0 - 1.0;
     float li = dot(normalize(n), normalize(vec3(0.35, 0.7, 0.45))) * 0.5 + 0.5;
@@ -99,9 +101,11 @@ void main() {
 }
 """
     val BEGIN_FSH = """#version 120
+const int colortex3Format = R8UI;
 void main() {
-    /* DRAWBUFFERS:2 */
+    /* DRAWBUFFERS:23 */
     gl_FragData[0] = vec4(0.5, 0.5, 0.5, 1.0);
+    gl_FragData[1] = vec4(7.0, 0.0, 0.0, 1.0);
 }
 """
 
