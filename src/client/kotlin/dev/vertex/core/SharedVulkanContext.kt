@@ -11,6 +11,7 @@ import dev.vertex.runtime.ProgramFamily
 import dev.vertex.runtime.RenderTier
 import dev.vertex.runtime.TierDecision
 import dev.vertex.runtime.TierNegotiator
+import net.fabricmc.loader.api.FabricLoader
 import org.lwjgl.vulkan.VkDevice
 
 data class SharedVulkanContext(
@@ -38,6 +39,14 @@ data class SharedVulkanContext(
                 (it as VulkanDeviceAccessor).`vertex$getEnabledFeatures`().features().mapTo(hashSetOf()) { feature -> feature.name() }
             }.orEmpty()
             val info = frontend.getDeviceInfo()
+            val loader = FabricLoader.getInstance()
+            val sodium = loader.isModLoaded("sodium") || loader.isModLoaded("embeddium")
+            val compatibility = CompatibilityProbe(
+                sodiumTerrainConflict = sodium,
+                translucentSortingConflict = sodium,
+                dynamicCaptureAvailable = System.getProperty("vertex.dynamicCapture") != "false",
+                externalWorldRendererPresent = loader.isModLoaded("distanthorizons") || loader.isModLoaded("replaymod"),
+            )
             val caps = DeviceCapabilities(
                 deviceHookAvailable = vulkan != null && VertexVulkanFeatures.injectionObserved,
                 descriptorIndexing = "descriptorIndexing" in featureNames,
@@ -52,7 +61,7 @@ data class SharedVulkanContext(
                 device = vulkan?.vkDevice(),
                 gpuName = info.name(),
                 graphicsFamily = vulkan?.graphicsQueue()?.queueFamilyIndex() ?: -1,
-                decisions = TierNegotiator.negotiate(caps, CompatibilityProbe()),
+                decisions = TierNegotiator.negotiate(caps, compatibility),
             )
         }
     }

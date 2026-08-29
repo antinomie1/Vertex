@@ -50,5 +50,7 @@ object VertexRenderer {
             "[Vertex] shared Vulkan device: gpu='{}' graphicsFamily={} tiers={}",
             context.gpuName, context.graphicsFamily, context.decisions.mapValues { it.value.tier },
         )
+        context.decisions.filterValues { it.tier != dev.vertex.runtime.RenderTier.TIER_2 }
+            .forEach { (family, decision) -> Vertex.log.warn("[Vertex] {} -> {}: {}", family, decision.tier, decision.reason) }
     }
 }
