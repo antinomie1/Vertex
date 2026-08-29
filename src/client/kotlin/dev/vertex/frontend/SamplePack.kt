@@ -1,5 +1,6 @@
 package dev.vertex.frontend
 
+import com.mojang.blaze3d.platform.NativeImage
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -45,6 +46,8 @@ uniform sampler2D colortex0;
 uniform sampler2D depthtex0;
 uniform sampler2D depthtex1;
 uniform sampler2D depthtex2;
+uniform sampler2D noisetex;
+uniform sampler2D lut;
 uniform sampler2D normalsTex;
 varying vec2 texcoord;
 void main() {
@@ -54,6 +57,8 @@ void main() {
     vec3 o = mix(c, s, 0.15);
     float d = texture2D(depthtex0, texcoord).r;
     d = min(d, min(texture2D(depthtex1, texcoord).r, texture2D(depthtex2, texcoord).r));
+    d += texture2D(noisetex, texcoord * 16.0).r * 0.000001;
+    d += texture2D(lut, texcoord).r * 0.000001;
     o = mix(o, vec3(0.55, 0.75, 1.0), smoothstep(0.006, 0.05, d) * 0.9);
     vec3 n = texture2D(normalsTex, texcoord).rgb * 2.0 - 1.0;
     float li = dot(normalize(n), normalize(vec3(0.35, 0.7, 0.45))) * 0.5 + 0.5;
@@ -86,7 +91,12 @@ void main() {
         Files.writeString(fsh, FSH)
         Files.writeString(root.resolve("composite1.vsh"), VSH)
         Files.writeString(root.resolve("composite1.fsh"), FSH_2)
-        Files.writeString(root.resolve("shaders.properties"), "flip.composite1.colortex1=false\n")
+        Files.writeString(root.resolve("shaders.properties"),
+            "flip.composite1.colortex1=false\ntexture.composite.lut=/lut.png\n")
+        NativeImage(2, 2, false).use { image ->
+            image.fillRect(0, 0, 2, 2, -1)
+            image.writeToFile(root.resolve("lut.png"))
+        }
         val tvsh = root.resolve("gbuffers_terrain.vsh")
         val tfsh = root.resolve("gbuffers_terrain.fsh")
         Files.writeString(tvsh, TERRAIN_VSH)

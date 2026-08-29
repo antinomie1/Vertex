@@ -35,6 +35,9 @@ data class ColorBufferSettings(
 data class PackSemantics(
     val colors: List<ColorBufferSettings>,
     val flips: Map<String, Map<Int, Boolean>>,
+    val noisePath: String?,
+    val noiseResolution: Int,
+    val customTextures: Map<String, Map<String, String>>,
 )
 
 /** Reads the shader constants and shaders.properties directives that control render targets. */
@@ -42,14 +45,20 @@ object PackSemanticsParser {
     fun load(packRoot: Path, options: Map<String, String> = emptyMap()): PackSemantics {
         val shaders = packRoot.resolve("shaders")
         val settings = MutableList(16) { ColorBufferSettings() }
+        var noiseResolution = 256
         Files.list(shaders).use { files ->
             files.filter { Files.isRegularFile(it) && it.fileName.toString().substringAfterLast('.', "") in SHADER_EXTENSIONS }
                 .sorted().forEach { path ->
                     LEGACY_GAUX4.find(Files.readString(path))?.groupValues?.get(1)?.let { settings[7] = settings[7].copy(format = ColorFormat.parse(it)) }
-                    parseShader(ShaderPreprocessor(listOf(shaders), options).process(path), settings)
+                    val source = ShaderPreprocessor(listOf(shaders), options).process(path)
+                    parseShader(source, settings)
+                    NOISE_RESOLUTION.find(source)?.groupValues?.get(1)?.toInt()?.let { noiseResolution = it }
                 }
         }
-        return PackSemantics(settings, parseFlips(shaders.resolve("shaders.properties")))
+        require(noiseResolution in 1..4096) { "noiseTextureResolution must be in 1..4096" }
+        val properties = loadProperties(shaders.resolve("shaders.properties"))
+        return PackSemantics(settings, parseFlips(properties), properties.getProperty("texture.noise")?.trim(),
+            noiseResolution, parseCustomTextures(properties))
     }
 
     private fun parseShader(source: String, settings: MutableList<ColorBufferSettings>) {
@@ -71,15 +80,23 @@ object PackSemanticsParser {
         settings[id] = settings[id].change()
     }
 
-    private fun parseFlips(path: Path): Map<String, Map<Int, Boolean>> {
-        if (!Files.isRegularFile(path)) return emptyMap()
-        val properties = Properties().apply { Files.newBufferedReader(path).use(::load) }
+    private fun loadProperties(path: Path) = Properties().apply {
+        if (Files.isRegularFile(path)) Files.newBufferedReader(path).use(::load)
+    }
+
+    private fun parseFlips(properties: Properties): Map<String, Map<Int, Boolean>> {
         return properties.stringPropertyNames().mapNotNull { key ->
             val match = FLIP.matchEntire(key) ?: return@mapNotNull null
             val id = colorId(match.groupValues[2]) ?: return@mapNotNull null
             Triple(match.groupValues[1], id, properties.getProperty(key).trim().toBooleanStrict())
         }.groupBy({ it.first }, { it.second to it.third }).mapValues { (_, values) -> values.toMap() }
     }
+
+    private fun parseCustomTextures(properties: Properties): Map<String, Map<String, String>> =
+        properties.stringPropertyNames().mapNotNull { key ->
+            val match = TEXTURE.matchEntire(key) ?: return@mapNotNull null
+            Triple(match.groupValues[1], match.groupValues[2].substringBefore('.'), properties.getProperty(key).trim())
+        }.groupBy({ it.first }, { it.second to it.third }).mapValues { (_, values) -> values.toMap() }
 
     fun colorId(name: String): Int? = when (name) {
         "gcolor" -> 0; "gdepth" -> 1; "gnormal" -> 2; "composite" -> 3
@@ -91,8 +108,10 @@ object PackSemanticsParser {
     private val FORMAT = Regex("""const\s+int\s+(\w+)Format\s*=\s*(\w+)\s*;""")
     private val CLEAR = Regex("""const\s+bool\s+(\w+)Clear\s*=\s*(true|false)\s*;""")
     private val CLEAR_COLOR = Regex("""const\s+vec4\s+(\w+)ClearColor\s*=\s*vec4\s*\(([^)]*)\)\s*;""")
+    private val NOISE_RESOLUTION = Regex("""const\s+int\s+noiseTextureResolution\s*=\s*(\d+)\s*;""")
     private val NUMBER = Regex("""[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?f?""")
     private val FLIP = Regex("""flip\.([^.]+)\.([^.]+)""")
+    private val TEXTURE = Regex("""texture\.(deferred|composite)\.([^.]+(?:\.[123])?)""")
     private val COLORTEX = Regex("""colortex(\d|1[0-5])""")
     private val LEGACY_GAUX4 = Regex("""GAUX4FORMAT\s*:\s*(\w+)""")
 }

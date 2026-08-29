@@ -22,7 +22,12 @@ class PackSemanticsParserTest {
             const bool gdepthClear = false;
             const vec4 colortex1ClearColor = vec4(0.25, 0.5, 1.0, 0.0);
         """.trimIndent())
-        shaders.resolve("shaders.properties").writeText("flip.composite.gdepth=false\nflip.final.colortex15=true\n")
+        shaders.resolve("shaders.properties").writeText("""
+            flip.composite.gdepth=false
+            flip.final.colortex15=true
+            texture.noise=/noise.png
+            texture.composite.lut=/lut.png
+        """.trimIndent())
 
         val semantics = PackSemanticsParser.load(root)
 
@@ -31,5 +36,7 @@ class PackSemanticsParserTest {
         assertEquals(listOf(0.25f, 0.5f, 1f, 0f), semantics.colors[1].clearColor)
         assertEquals(false, semantics.flips["composite"]?.get(1))
         assertEquals(true, semantics.flips["final"]?.get(15))
+        assertEquals("/noise.png", semantics.noisePath)
+        assertEquals("/lut.png", semantics.customTextures["composite"]?.get("lut"))
     }
 }

@@ -1,6 +1,7 @@
 package dev.vertex.render
 
 import com.mojang.blaze3d.systems.RenderSystem
+import com.mojang.blaze3d.platform.NativeImage
 import com.mojang.renderpearl.api.GpuFormat
 import com.mojang.renderpearl.api.commands.CommandEncoder
 import com.mojang.renderpearl.api.commands.RenderPass
@@ -28,6 +29,8 @@ import net.minecraft.client.renderer.BindGroupLayouts
 import net.minecraft.client.renderer.RenderPipelines
 import net.minecraft.resources.Identifier
 import java.util.Optional
+import java.nio.file.Files
+import java.nio.file.Path
 import org.joml.Vector4f
 
 /**
@@ -59,6 +62,11 @@ object PackChain {
     private var colorClears = List<Vector4f?>(16) { Vector4f() }
     private val extraTextures = hashMapOf<Int, Array<GpuTexture>>()
     private val extraViews = hashMapOf<Int, Array<GpuTextureView>>()
+    private val staticTextures = hashMapOf<String, GpuTexture>()
+    private val staticViews = hashMapOf<String, GpuTextureView>()
+    private var targetBytes = 0L
+    private var packBudgetBytes = 512L * MIB
+    private var staticBytes = 0L
     private val banks = IntArray(16)
 
     fun prepare() {
@@ -110,7 +118,9 @@ object PackChain {
                 pass(encoder, "vertex-pack-${program.name}", program.outputs, sceneView) { rp ->
                     RenderSystem.bindDefaultUniforms(rp)
                     rp.setPipeline(program.pipeline)
-                    program.samplers.forEach { name -> rp.setUniform(name, samplerView(name, banks, sceneView), sampler) }
+                    program.samplers.forEach { name ->
+                        rp.setUniform(name, program.staticSamplers[name] ?: samplerView(name, banks, sceneView), sampler)
+                    }
                 }
                 for (id in program.outputs) if (program.flips[id] != false) banks[id] = banks[id] xor 1
                 for ((id, flip) in program.flips) if (flip) banks[id] = banks[id] xor 1
@@ -272,8 +282,11 @@ object PackChain {
         }
         if (screenPrograms.isEmpty()) screenPrograms = programs.map { program ->
             val samplers = program.samplers.distinct()
-            require(samplers.all { colorId(it) != null || DEPTH.matches(it) || it == "normalsTex" }) {
-                "${program.name}: unsupported samplers ${samplers.filterNot { colorId(it) != null || DEPTH.matches(it) || it == "normalsTex" }}"
+            val staticSamplers = samplers.mapNotNull { name ->
+                staticSampler(device, packRoot.resolve("shaders"), semantics, program.name, name)?.let { name to it }
+            }.toMap()
+            require(samplers.all { colorId(it) != null || DEPTH.matches(it) || it == "normalsTex" || it in staticSamplers }) {
+                "${program.name}: unsupported samplers ${samplers.filterNot { colorId(it) != null || DEPTH.matches(it) || it == "normalsTex" || it in staticSamplers }}"
             }
             val layout = BindGroupLayout.builder().also { builder ->
                 samplers.forEach { builder.withUniform(it, UniformType.COMBINED_IMAGE_SAMPLER) }
@@ -286,7 +299,8 @@ object PackChain {
                 else -> null
             } }
             ScreenProgram(program.name, compile(device, programSource, vs, fs, layout,
-                program.outputs.map(colorFormats::get)), samplers, program.outputs, semantics.flips[program.name].orEmpty())
+                program.outputs.map(colorFormats::get)), samplers, program.outputs,
+                semantics.flips[program.name].orEmpty(), staticSamplers)
         }
         if (blit == null) blit = compile(device, source, id("pack/post.v"), id("pack/blit.f"), BindGroupLayouts.IN_SAMPLER)
         if (customColor0() && sceneToColor0 == null) sceneToColor0 = compile(
@@ -331,6 +345,51 @@ object PackChain {
 
     private fun customColor0() = colorFormats[0] != GpuFormat.RGBA8_UNORM
 
+    private fun staticSampler(
+        device: com.mojang.renderpearl.api.device.GpuDevice,
+        shaders: Path,
+        semantics: dev.vertex.frontend.PackSemantics,
+        program: String,
+        name: String,
+    ): GpuTextureView? {
+        val stage = if (program.startsWith("deferred")) "deferred" else "composite"
+        val path = if (name == "noisetex") semantics.noisePath else semantics.customTextures[stage]?.get(name)
+        if (path == null && name != "noisetex") return null
+        val key = path?.let { "file:$it" } ?: "noise:${semantics.noiseResolution}"
+        return staticViews.getOrPut(key) {
+            val image = path?.let { readImage(shaders, it) } ?: generateNoise(semantics.noiseResolution)
+            image.use {
+                val bytes = it.width.toLong() * it.height * 4L
+                require(it.width <= 4096 && it.height <= 4096 && targetBytes + staticBytes + bytes <= packBudgetBytes) {
+                    "static texture $name exceeds the pack memory budget"
+                }
+                val texture = device.createTexture(
+                    { "vertex-$name" }, GpuTexture.USAGE_TEXTURE_BINDING or GpuTexture.USAGE_COPY_DST,
+                    GpuFormat.RGBA8_UNORM, it.width, it.height, 1, 1,
+                )
+                device.createCommandEncoder().writeToTexture(texture, it)
+                staticBytes += bytes
+                staticTextures[key] = texture
+                dev.vertex.Vertex.log.info("[Vertex] static texture '{}' loaded ({}x{})", name, it.width, it.height)
+                device.createTextureView(texture)
+            }
+        }
+    }
+
+    private fun readImage(shaders: Path, value: String): NativeImage {
+        val path = shaders.resolve(value.removePrefix("/")).normalize()
+        require(path.startsWith(shaders) && Files.isRegularFile(path)) { "custom texture is outside the pack or missing: $value" }
+        return Files.newInputStream(path).use(NativeImage::read)
+    }
+
+    private fun generateNoise(size: Int) = NativeImage(size, size, false).also { image ->
+        for (y in 0 until size) for (x in 0 until size) {
+            var n = x * 0x1f123bb5 + y * 0x05491333
+            n = (n xor (n ushr 16)) * -0x7a143595
+            image.setPixelABGR(x, y, -0x1000000 or (n and 0xFFFFFF))
+        }
+    }
+
     private fun createDepths(device: com.mojang.renderpearl.api.device.GpuDevice) {
         for (id in neededDepths) if (depthTextures[id] == null) {
             depthTextures[id] = device.createTexture(
@@ -350,7 +409,9 @@ object PackChain {
             if (needsNormals) listOf(ImageAllocation("normalsTex", w, h, 4, ImageClass.NON_CRITICAL)) else emptyList()
         val budgetMiB = System.getProperty("vertex.memoryBudgetMiB")?.toLongOrNull() ?: 512L
         require(budgetMiB in 64..16384) { "vertex.memoryBudgetMiB must be between 64 and 16384" }
-        val plan = MemoryBudgetGovernor.plan(allocations, budgetMiB * MIB, w, h)
+        packBudgetBytes = budgetMiB * MIB
+        val plan = MemoryBudgetGovernor.plan(allocations, packBudgetBytes, w, h)
+        targetBytes = plan.bytes
         dev.vertex.Vertex.log.info("[Vertex] pack target budget: {} MiB / {} MiB", plan.bytes / MIB, budgetMiB)
     }
 
@@ -384,6 +445,7 @@ object PackChain {
         val samplers: List<String>,
         val outputs: List<Int>,
         val flips: Map<Int, Boolean>,
+        val staticSamplers: Map<String, GpuTextureView>,
     )
 
     private fun gpuFormat(format: ColorFormat): GpuFormat = when (format) {
