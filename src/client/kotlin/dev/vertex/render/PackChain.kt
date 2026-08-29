@@ -121,6 +121,34 @@ object PackChain {
     private var timingsSinceReport = 0
     private var perfBaselineWritten = false
 
+    @JvmStatic
+    fun close() {
+        earlyPrograms.flatMap { listOf(it.pipeline) }.plus(screenPrograms.map(ScreenProgram::pipeline))
+            .plus(listOf(blit, sceneToColor0, normals, depthScale).filterNotNull())
+            .distinct().forEach { runCatching { it.close() } }
+        listOf(tempView to tempTex, normalView to normalTex).forEach { (view, texture) ->
+            runCatching { view?.close() }; runCatching { texture?.close() }
+        }
+        depthViews.forEach { runCatching { it?.close() } }
+        depthTextures.forEach { runCatching { it?.close() } }
+        extraViews.values.flatMap { it.asIterable() }.forEach { runCatching { it.close() } }
+        extraTextures.values.flatMap { it.asIterable() }.forEach { runCatching { it.close() } }
+        staticBindings.values.forEach { runCatching { it.view.close() } }
+        staticTextures.values.forEach { runCatching { it.close() } }
+        textureSamplers.values.forEach { runCatching { it.close() } }
+        runCatching { uniformBuffer?.close() }
+        runCatching { timingPool?.close() }
+        earlyPrograms = emptyList(); screenPrograms = emptyList()
+        blit = null; sceneToColor0 = null; normals = null; depthScale = null
+        tempTex = null; tempView = null; normalTex = null; normalView = null
+        depthTextures.fill(null); depthViews.fill(null)
+        extraTextures.clear(); extraViews.clear(); staticTextures.clear(); staticBindings.clear(); textureSamplers.clear()
+        uniformBuffer = null; timingPool = null; frameReady = false; failed = false
+        scaleResolved = false; builtForW = 0; builtForH = 0; w = 0; h = 0
+        targetBytes = 0; staticBytes = 0; needsNormals = false; neededDepths = emptySet(); activeColors = emptySet()
+        timingArmed.fill(false); timingsSinceReport = 0; perfBaselineWritten = false
+    }
+
     fun prepare() {
         if (!enabled()) return
         try {

@@ -72,6 +72,17 @@ object ShadowRenderer {
     private val scratch = FloatArray(16)
     private val staging = ByteBuffer.allocateDirect(64).order(ByteOrder.nativeOrder())
 
+    @JvmStatic
+    fun close() {
+        runCatching { depthView?.close() }; runCatching { depthTexture?.close() }
+        runCatching { colorView?.close() }; runCatching { colorTexture?.close() }
+        runCatching { uniformBuffer?.close() }
+        listOf(base, multidraw).filterNotNull().distinct().forEach { runCatching { it.close() } }
+        depthView = null; depthTexture = null; colorView = null; colorTexture = null; uniformBuffer = null
+        base = null; multidraw = null; active = false; failed = false; discovered = false; requested = emptySet()
+        logged.set(false); cacheLogged.set(false); cache.invalidate()
+    }
+
     fun discover() {
         if (discovered) return
         discovered = true
@@ -143,6 +154,7 @@ object ShadowRenderer {
                 if (cacheLogged.compareAndSet(false, true)) Vertex.log.info("[Vertex] shadow cache hit verified")
                 return
             }
+            val renderEpoch = cache.epoch()
             val device = RenderSystem.getDevice()
             val encoder = device.createCommandEncoder()
             updateMatrix(encoder, angle)
@@ -158,7 +170,7 @@ object ShadowRenderer {
                     active = false
                 }
             }
-            cache.markRendered(angle, camera.x, camera.z)
+            cache.markRendered(angle, camera.x, camera.z, renderEpoch)
             if (logged.compareAndSet(false, true)) Vertex.log.info("[Vertex] shadow terrain draw verified")
             slot = slot xor 1
         } catch (t: Throwable) {

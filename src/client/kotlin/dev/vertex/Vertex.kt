@@ -2,6 +2,8 @@ package dev.vertex
 
 import dev.vertex.render.VertexRenderer
 import dev.vertex.render.PackChain
+import dev.vertex.render.ShadowRenderer
+import dev.vertex.render.TerrainMesh
 import dev.vertex.frontend.PackRuntime
 import net.fabricmc.api.ClientModInitializer
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents
@@ -15,6 +17,11 @@ object Vertex : ClientModInitializer {
         log.info("[Vertex] init; registering shared-device frame seam")
         VertexRenderer.register()
         ClientLifecycleEvents.CLIENT_STARTED.register { PackChain.prepare() }
-        ClientLifecycleEvents.CLIENT_STOPPING.register { PackRuntime.close() }
+        ClientLifecycleEvents.CLIENT_STOPPING.register {
+            PackChain.close()
+            ShadowRenderer.close()
+            TerrainMesh.close()
+            PackRuntime.close()
+        }
     }
 }

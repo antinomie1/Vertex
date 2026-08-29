@@ -51,6 +51,15 @@ object TerrainMesh {
     private var prepared: Prepared? = null
 
     @JvmStatic
+    fun close() {
+        prepared?.compiled?.values?.distinct()?.forEach { runCatching { it.close() } }
+        prepared = null
+        requirements = TerrainRequirements(false, false, false, false)
+        customFormat = format(requirements)
+        TerrainCommandCache.invalidate()
+    }
+
+    @JvmStatic
     @Synchronized
     fun prepare() {
         if (SharedVulkanContext.attach().tier(ProgramFamily.TERRAIN_OPAQUE) != RenderTier.TIER_2) {

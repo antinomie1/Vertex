@@ -31,4 +31,16 @@ class ShadowCacheStateTest {
         assertTrue(cache.dirtyTiles().isEmpty())
         assertFalse(cache.needsRender(0f, 0.0, 0.0))
     }
+
+    @Test
+    fun `keeps invalidation that arrives during a draw`() {
+        val cache = ShadowCacheState(0.1f)
+        cache.markRendered(0f, 0.0, 0.0)
+        cache.invalidateSection(1, 1)
+        val renderEpoch = cache.epoch()
+        cache.invalidateSection(2, 2)
+        cache.markRendered(0f, 0.0, 0.0, renderEpoch)
+        assertEquals(1, cache.pendingSectionCount())
+        assertTrue(cache.needsRender(0f, 0.0, 0.0))
+    }
 }

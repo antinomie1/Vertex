@@ -17,7 +17,7 @@ class ShadowCacheState(
 
     private var key: Key? = null
     private var dirtyEpoch = 0L
-    private val dirtySections = LinkedHashSet<Section>()
+    private val dirtySections = LinkedHashMap<Section, Long>()
 
     @Synchronized
     fun invalidate() { dirtyEpoch++ }
@@ -25,13 +25,16 @@ class ShadowCacheState(
     /** Marks only the tile containing a section; callers pass section, not block, coordinates. */
     @Synchronized
     fun invalidateSection(sectionX: Int, sectionZ: Int) {
-        dirtySections += Section(sectionX, sectionZ)
         dirtyEpoch++
+        dirtySections[Section(sectionX, sectionZ)] = dirtyEpoch
     }
 
     @Synchronized
+    fun epoch(): Long = dirtyEpoch
+
+    @Synchronized
     fun dirtyTiles(): Set<ShadowTile> = dirtySections.mapTo(linkedSetOf()) {
-        ShadowTile(Math.floorDiv(it.x, tileSections), Math.floorDiv(it.z, tileSections))
+        ShadowTile(Math.floorDiv(it.key.x, tileSections), Math.floorDiv(it.key.z, tileSections))
     }
 
     @Synchronized
@@ -45,20 +48,23 @@ class ShadowCacheState(
         return changed || dirtySections.isNotEmpty()
     }
 
-    /** Commits a successful draw. Invalidations that arrived before this call are consumed. */
+    /** Commits a successful draw; invalidations after [renderEpoch] stay pending. */
     @Synchronized
-    fun markRendered(angle: Float, cameraX: Double, cameraZ: Double) {
-        key = key(angle, cameraX, cameraZ)
-        dirtySections.clear()
+    fun markRendered(angle: Float, cameraX: Double, cameraZ: Double, renderEpoch: Long = dirtyEpoch) {
+        key = Key(baseKey(angle, cameraX, cameraZ), renderEpoch)
+        dirtySections.entries.removeIf { it.value <= renderEpoch }
     }
 
-    private fun key(angle: Float, cameraX: Double, cameraZ: Double) = Key(
+    private fun key(angle: Float, cameraX: Double, cameraZ: Double) =
+        Key(baseKey(angle, cameraX, cameraZ), dirtyEpoch)
+
+    private fun baseKey(angle: Float, cameraX: Double, cameraZ: Double) = BaseKey(
         (angle / angleStepRadians).roundToInt(),
         floor(cameraX).toInt() shr 4,
         floor(cameraZ).toInt() shr 4,
-        dirtyEpoch,
     )
 
     private data class Section(val x: Int, val z: Int)
-    private data class Key(val sun: Int, val cameraSectionX: Int, val cameraSectionZ: Int, val dirtyEpoch: Long)
+    private data class BaseKey(val sun: Int, val cameraSectionX: Int, val cameraSectionZ: Int)
+    private data class Key(val base: BaseKey, val dirtyEpoch: Long)
 }
