@@ -20,6 +20,8 @@ import dev.vertex.frontend.PackFrontend
 import dev.vertex.frontend.PackRuntime
 import dev.vertex.frontend.PackSemanticsParser
 import dev.vertex.frontend.ColorFormat
+import dev.vertex.mixin.GameRendererProjectionAccessor
+import dev.vertex.mixin.ProjectionMatrixBufferAccessor
 import dev.vertex.runtime.ImageAllocation
 import dev.vertex.runtime.ImageClass
 import dev.vertex.runtime.MemoryBudgetGovernor
@@ -30,6 +32,8 @@ import net.minecraft.client.Minecraft
 import net.minecraft.client.renderer.BindGroupLayouts
 import net.minecraft.client.renderer.RenderPipelines
 import net.minecraft.resources.Identifier
+import net.minecraft.util.ARGB
+import net.minecraft.world.attribute.EnvironmentAttributes
 import java.util.Optional
 import java.nio.file.Files
 import java.nio.file.Path
@@ -37,6 +41,7 @@ import org.joml.Vector4f
 import org.joml.Matrix4f
 import kotlin.math.cos
 import kotlin.math.sin
+import java.time.LocalDateTime
 
 /**
  * 包运行时核心：colortex0 + depthtex0 + normalsTex 三通道复合链。
@@ -83,8 +88,11 @@ object PackChain {
     private var frameTimeCounter = 0f
     private val previousCamera = FloatArray(3)
     private val previousModelView = Matrix4f()
+    private val previousProjection = Matrix4f()
     private val inverseMatrix = Matrix4f()
+    private val projectionMatrix = Matrix4f()
     private val matrixScratch = FloatArray(16)
+    private val normalScratch = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
 
     fun prepare() {
         if (failed) return
@@ -423,25 +431,66 @@ object PackChain {
         val mc = Minecraft.getInstance()
         val camera = mc.gameRenderer.mainCamera().position()
         val clock = mc.level?.defaultClockTime ?: 0L
+        val partialTick = mc.deltaTracker.getGameTimeDeltaPartialTick(true)
         val day = Math.floorMod(clock, 24000L).toInt()
-        val angle = day / 24000f * (Math.PI * 2.0).toFloat()
-        uniformHeap.putFloat(uniformSlot, "near", 0.05f)
-        uniformHeap.putFloat(uniformSlot, "far", mc.options.effectiveRenderDistance * 16f)
+        val probe = mc.gameRenderer.mainCamera().attributeProbe()
+        val angle = probe.getValue(EnvironmentAttributes.SUN_ANGLE, partialTick)
+        val projection = ((mc.gameRenderer as GameRendererProjectionAccessor).`vertex$getLevelProjectionMatrixBuffer`()
+            as ProjectionMatrixBufferAccessor).`vertex$getLastUploadedProjection`()
+        uniformHeap.putFloat(uniformSlot, "near", projection?.zNear() ?: 0.05f)
+        uniformHeap.putFloat(uniformSlot, "far", projection?.zFar() ?: mc.options.effectiveRenderDistance * 16f)
         uniformHeap.putFloat(uniformSlot, "viewWidth", w.toFloat())
         uniformHeap.putFloat(uniformSlot, "viewHeight", h.toFloat())
         uniformHeap.putFloat(uniformSlot, "aspectRatio", w.toFloat() / h)
         uniformHeap.putFloat(uniformSlot, "frameTime", frameTime)
         uniformHeap.putFloat(uniformSlot, "frameTimeCounter", frameTimeCounter)
         uniformHeap.putFloat(uniformSlot, "eyeAltitude", camera.y.toFloat())
-        uniformHeap.putFloat(uniformSlot, "sunAngle", day / 24000f)
-        uniformHeap.putFloat(uniformSlot, "shadowAngle", day / 24000f)
+        uniformHeap.putFloat(uniformSlot, "sunAngle", angle / (Math.PI * 2.0).toFloat())
+        uniformHeap.putFloat(uniformSlot, "shadowAngle", angle / (Math.PI * 2.0).toFloat())
+        uniformHeap.putFloat(uniformSlot, "screenBrightness", mc.options.gamma().get().toFloat())
+        uniformHeap.putFloat(uniformSlot, "pi", Math.PI.toFloat())
+        val rain = mc.level?.getRainLevel(partialTick) ?: 0f
+        uniformHeap.putFloat(uniformSlot, "rainStrength", rain)
+        uniformHeap.putFloat(uniformSlot, "wetness", rain)
+        uniformHeap.putFloat(uniformSlot, "rainfall", rain)
+        uniformHeap.putFloat(uniformSlot, "thunderStrength", mc.level?.getThunderLevel(partialTick) ?: 0f)
+        uniformHeap.putFloat(uniformSlot, "fogStart", probe.getValue(EnvironmentAttributes.FOG_START_DISTANCE, partialTick))
+        uniformHeap.putFloat(uniformSlot, "fogEnd", probe.getValue(EnvironmentAttributes.FOG_END_DISTANCE, partialTick))
+        uniformHeap.putFloat(uniformSlot, "cloudHeight", probe.getValue(EnvironmentAttributes.CLOUD_HEIGHT, partialTick))
         uniformHeap.putInt(uniformSlot, "frameCounter", frameCounter)
         uniformHeap.putInt(uniformSlot, "worldTime", day)
         uniformHeap.putInt(uniformSlot, "worldDay", (clock / 24000L).toInt())
         uniformHeap.putInt(uniformSlot, "moonPhase", Math.floorMod(clock / 24000L, 8L).toInt())
+        val player = mc.player
+        uniformHeap.putInt(uniformSlot, "isEyeInWater", if (player?.isUnderWater == true) 1 else 0)
+        uniformHeap.putInt(uniformSlot, "isRightHanded", if (mc.options.mainHand().get().name == "RIGHT") 1 else 0)
+        uniformHeap.putInt(uniformSlot, "is_sneaking", if (player?.isCrouching == true) 1 else 0)
+        uniformHeap.putInt(uniformSlot, "is_sprinting", if (player?.isSprinting == true) 1 else 0)
+        uniformHeap.putInt(uniformSlot, "is_burning", if (player?.isOnFire == true) 1 else 0)
+        uniformHeap.putInt(uniformSlot, "is_on_ground", if (player?.onGround() == true) 1 else 0)
+        uniformHeap.putInt(uniformSlot, "is_invisible", if (player?.isInvisible == true) 1 else 0)
+        uniformHeap.putInt(uniformSlot, "firstPersonCamera", if (mc.options.cameraType.isFirstPerson) 1 else 0)
+        uniformHeap.putInt(uniformSlot, "isSpectator", if (player?.isSpectator == true) 1 else 0)
+        uniformHeap.putInt(uniformSlot, "blockEntityId", -1)
+        uniformHeap.putInt(uniformSlot, "currentRenderedItemId", -1)
         uniformHeap.putVec3(uniformSlot, "cameraPosition", camera.x.toFloat(), camera.y.toFloat(), camera.z.toFloat())
         uniformHeap.putVec3(uniformSlot, "previousCameraPosition", previousCamera[0], previousCamera[1], previousCamera[2])
+        val previousX = previousCamera[0]; val previousY = previousCamera[1]; val previousZ = previousCamera[2]
         previousCamera[0] = camera.x.toFloat(); previousCamera[1] = camera.y.toFloat(); previousCamera[2] = camera.z.toFloat()
+        val blockX = kotlin.math.floor(camera.x).toInt(); val blockY = kotlin.math.floor(camera.y).toInt(); val blockZ = kotlin.math.floor(camera.z).toInt()
+        uniformHeap.putIVec3(uniformSlot, "cameraPositionInt", blockX, blockY, blockZ)
+        uniformHeap.putVec3(uniformSlot, "cameraPositionFract", camera.x.toFloat() - blockX, camera.y.toFloat() - blockY, camera.z.toFloat() - blockZ)
+        val oldX = kotlin.math.floor(previousX).toInt(); val oldY = kotlin.math.floor(previousY).toInt(); val oldZ = kotlin.math.floor(previousZ).toInt()
+        uniformHeap.putIVec3(uniformSlot, "previousCameraPositionInt", oldX, oldY, oldZ)
+        uniformHeap.putVec3(uniformSlot, "previousCameraPositionFract", previousX - oldX, previousY - oldY, previousZ - oldZ)
+        val sky = probe.getValue(EnvironmentAttributes.SKY_COLOR, partialTick)
+        val fog = probe.getValue(EnvironmentAttributes.FOG_COLOR, partialTick)
+        uniformHeap.putVec3(uniformSlot, "skyColor", ARGB.redFloat(sky), ARGB.greenFloat(sky), ARGB.blueFloat(sky))
+        uniformHeap.putVec3(uniformSlot, "fogColor", ARGB.redFloat(fog), ARGB.greenFloat(fog), ARGB.blueFloat(fog))
+        val date = LocalDateTime.now()
+        uniformHeap.putIVec3(uniformSlot, "currentDate", date.year, date.monthValue, date.dayOfMonth)
+        uniformHeap.putIVec3(uniformSlot, "currentTime", date.hour, date.minute, date.second)
+        uniformHeap.putIVec2(uniformSlot, "currentYearTime", date.dayOfYear, if (date.toLocalDate().isLeapYear) 366 else 365)
         uniformHeap.putVec3(uniformSlot, "sunPosition", cos(angle) * 100f, sin(angle) * 100f, 0f)
         uniformHeap.putVec3(uniformSlot, "moonPosition", -cos(angle) * 100f, -sin(angle) * 100f, 0f)
         uniformHeap.putVec3(uniformSlot, "upPosition", 0f, 100f, 0f)
@@ -452,7 +501,13 @@ object PackChain {
         putMatrix("gbufferModelViewInverse", inverseMatrix.set(modelView).invert())
         putMatrix("gbufferPreviousModelView", previousModelView)
         previousModelView.set(modelView)
-        IDENTITY_MATRICES.forEach { putMatrix(it, IDENTITY) }
+        projection?.getMatrix(projectionMatrix) ?: projectionMatrix.identity()
+        putMatrix("gbufferProjection", projectionMatrix)
+        putMatrix("gbufferProjectionInverse", inverseMatrix.set(projectionMatrix).invert())
+        putMatrix("gbufferPreviousProjection", previousProjection)
+        previousProjection.set(projectionMatrix)
+        SHADOW_MATRICES.forEach { putMatrix(it, IDENTITY) }
+        NORMAL_MATRICES.forEach { uniformHeap.putMat3(uniformSlot, it, normalScratch) }
         encoder.writeToBuffer(
             uniformBuffer!!.slice(uniformHeap.segmentOffset(uniformSlot).toLong(), uniformHeap.layout.segmentBytes.toLong()),
             uniformHeap.view(uniformSlot),
@@ -595,8 +650,8 @@ object PackChain {
     private val COLORTEX = Regex("""colortex(\d|1[0-5])""")
     private val DEPTH = Regex("""depthtex([0-2])""")
     private val IDENTITY = Matrix4f()
-    private val IDENTITY_MATRICES = arrayOf("gbufferProjection", "gbufferProjectionInverse", "gbufferPreviousProjection",
-        "shadowModelView", "shadowModelViewInverse", "shadowProjection", "shadowProjectionInverse")
+    private val SHADOW_MATRICES = arrayOf("shadowModelView", "shadowModelViewInverse", "shadowProjection", "shadowProjectionInverse")
+    private val NORMAL_MATRICES = arrayOf("gbufferNormal", "gbufferNormalInverse", "gbufferPreviousNormal")
     private val ZERO = listOf(0f, 0f, 0f, 0f)
     private val WHITE = listOf(1f, 1f, 1f, 1f)
     private const val MIB = 1024L * 1024L

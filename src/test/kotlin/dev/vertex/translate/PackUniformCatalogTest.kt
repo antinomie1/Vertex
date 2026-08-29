@@ -22,4 +22,10 @@ class PackUniformCatalogTest {
         assertFailsWith<IllegalArgumentException> { LegacyUniformTranslator.translate("uniform float mystery;") }
         assertFailsWith<IllegalArgumentException> { LegacyUniformTranslator.translate("uniform int viewWidth;") }
     }
+
+    @Test
+    fun `accepts boolean integer vector and matrix catalog members`() {
+        val source = "uniform bool hideGUI; uniform ivec3 currentDate; uniform mat3 gbufferNormal;"
+        assertEquals(setOf("hideGUI", "currentDate", "gbufferNormal"), LegacyUniformTranslator.uniforms(source))
+    }
 }

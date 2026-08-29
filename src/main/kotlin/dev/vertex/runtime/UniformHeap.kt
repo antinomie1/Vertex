@@ -4,7 +4,8 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 enum class UniformType(val alignment: Int, val bytes: Int) {
-    FLOAT(4, 4), INT(4, 4), VEC2(8, 8), IVEC2(8, 8), VEC3(16, 12), VEC4(16, 16), MAT4(16, 64),
+    FLOAT(4, 4), INT(4, 4), VEC2(8, 8), IVEC2(8, 8), VEC3(16, 12), IVEC3(16, 12),
+    VEC4(16, 16), MAT3(16, 48), MAT4(16, 64),
 }
 
 data class UniformMember(val name: String, val type: UniformType, val count: Int, val offset: Int, val stride: Int)
@@ -42,7 +43,7 @@ class UniformHeap(val layout: UniformLayout, val slots: Int = 2) {
 
     fun putFloats(slot: Int, name: String, values: FloatArray) {
         val member = layout.member(name)
-        require(member.type != UniformType.INT && member.type != UniformType.IVEC2 && values.size * Float.SIZE_BYTES <= member.stride * member.count)
+        require(member.type !in INTEGER_TYPES && values.size * Float.SIZE_BYTES <= member.stride * member.count)
         var offset = segmentOffset(slot) + member.offset
         values.forEach { data.putFloat(offset, it); offset += Float.SIZE_BYTES }
     }
@@ -87,6 +88,20 @@ class UniformHeap(val layout: UniformLayout, val slots: Int = 2) {
         data.putInt(offset, x); data.putInt(offset + Int.SIZE_BYTES, y)
     }
 
+    fun putIVec3(slot: Int, name: String, x: Int, y: Int, z: Int) {
+        val member = layout.member(name)
+        require(member.type == UniformType.IVEC3)
+        val offset = segmentOffset(slot) + member.offset
+        data.putInt(offset, x); data.putInt(offset + 4, y); data.putInt(offset + 8, z)
+    }
+
+    fun putMat3(slot: Int, name: String, values: FloatArray) {
+        val member = layout.member(name)
+        require(member.type == UniformType.MAT3 && values.size == 9)
+        val start = segmentOffset(slot) + member.offset
+        for (column in 0..2) for (row in 0..2) data.putFloat(start + column * 16 + row * 4, values[column * 3 + row])
+    }
+
     fun view(slot: Int): ByteBuffer = data.duplicate().apply {
         val start = segmentOffset(slot)
         position(start); limit(start + layout.segmentBytes)
@@ -95,5 +110,9 @@ class UniformHeap(val layout: UniformLayout, val slots: Int = 2) {
     private fun checkedSlot(slot: Int): Int {
         require(slot in 0 until slots) { "slot $slot outside 0..${slots - 1}" }
         return slot
+    }
+
+    private companion object {
+        val INTEGER_TYPES = setOf(UniformType.INT, UniformType.IVEC2, UniformType.IVEC3)
     }
 }

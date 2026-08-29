@@ -44,4 +44,14 @@ class UniformHeapTest {
         assertEquals(1920f, view.getFloat(layout.member("size").offset))
         assertEquals(7, view.getInt(layout.member("light").offset + 4))
     }
+
+    @Test
+    fun `mat3 columns receive std140 padding`() {
+        val layout = UniformLayoutBuilder(16).add("normal", UniformType.MAT3).build()
+        val heap = UniformHeap(layout, 1)
+        heap.putMat3(0, "normal", floatArrayOf(1f, 2f, 3f, 4f, 5f, 6f, 7f, 8f, 9f))
+        val view = heap.view(0)
+        assertEquals(4f, view.getFloat(16))
+        assertEquals(9f, view.getFloat(40))
+    }
 }

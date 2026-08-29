@@ -13,17 +13,30 @@ object PackUniformCatalog {
         "frameTime" to f(), "frameTimeCounter" to f(), "rainStrength" to f(), "wetness" to f(),
         "eyeAltitude" to f(), "sunAngle" to f(), "shadowAngle" to f(), "nightVision" to f(),
         "blindness" to f(), "darknessFactor" to f(), "screenBrightness" to f(), "centerDepthSmooth" to f(),
-        "rainfall" to f(), "temperature" to f(), "frameCounter" to i(), "worldTime" to i(),
-        "worldDay" to i(), "moonPhase" to i(), "isEyeInWater" to i(), "hideGUI" to i(), "biome" to i(),
-        "biome_category" to i(), "biome_precipitation" to i(), "cameraPosition" to v3(),
+        "rainfall" to f(), "temperature" to f(), "fogDensity" to f(), "fogStart" to f(), "fogEnd" to f(),
+        "darknessLightFactor" to f(), "heldBlockLightValue" to f(), "heldBlockLightValue2" to f(),
+        "playerMood" to f(), "constantMood" to f(), "thunderStrength" to f(), "cloudTime" to f(),
+        "cloudHeight" to f(), "pi" to f(), "frameTimeSmooth" to f(), "frameCounter" to i(), "worldTime" to i(),
+        "worldDay" to i(), "moonPhase" to i(), "isEyeInWater" to i(), "hideGUI" to b(), "biome" to i(),
+        "biome_category" to i(), "biome_precipitation" to i(), "heldItemId" to i(), "heldItemId2" to i(),
+        "entityId" to i(), "blockEntityId" to i(), "currentRenderedItemId" to i(), "renderStage" to i(),
+        "fogMode" to i(), "fogShape" to i(), "anisotropicFiltering" to i(), "textureReloadCount" to i(),
+        "isRightHanded" to b(), "is_sneaking" to b(), "is_sprinting" to b(), "is_hurt" to b(),
+        "is_invisible" to b(), "is_burning" to b(), "is_on_ground" to b(), "firstPersonCamera" to b(),
+        "isSpectator" to b(), "cameraPosition" to v3(),
         "previousCameraPosition" to v3(), "sunPosition" to v3(), "moonPosition" to v3(),
         "shadowLightPosition" to v3(), "upPosition" to v3(), "skyColor" to v3(),
+        "fogColor" to v3(), "heldBlockLightColor" to v3(), "heldBlockLightColor2" to v3(),
+        "cameraPositionFract" to v3(), "previousCameraPositionFract" to v3(),
+        "cameraPositionInt" to iv3(), "previousCameraPositionInt" to iv3(), "currentDate" to iv3(),
+        "currentTime" to iv3(),
         "eyeBrightness" to iv2(), "eyeBrightnessSmooth" to iv2(), "terrainTextureSize" to iv2(),
-        "atlasSize" to iv2(), "taaOffset" to v2(), "entityColor" to v4(),
+        "atlasSize" to iv2(), "currentYearTime" to iv2(), "taaOffset" to v2(), "entityColor" to v4(),
         "gbufferModelView" to m4(), "gbufferModelViewInverse" to m4(), "gbufferPreviousModelView" to m4(),
         "gbufferProjection" to m4(), "gbufferProjectionInverse" to m4(), "gbufferPreviousProjection" to m4(),
         "shadowModelView" to m4(), "shadowModelViewInverse" to m4(),
         "shadowProjection" to m4(), "shadowProjectionInverse" to m4(),
+        "gbufferNormal" to m3(), "gbufferNormalInverse" to m3(), "gbufferPreviousNormal" to m3(),
     )
 
     val layout: UniformLayout = UniformLayoutBuilder(256).also { builder ->
@@ -38,11 +51,14 @@ object PackUniformCatalog {
 
     private fun f() = PackUniformSpec("float", UniformType.FLOAT)
     private fun i() = PackUniformSpec("int", UniformType.INT)
+    private fun b() = PackUniformSpec("bool", UniformType.INT)
     private fun v2() = PackUniformSpec("vec2", UniformType.VEC2)
     private fun iv2() = PackUniformSpec("ivec2", UniformType.IVEC2)
+    private fun iv3() = PackUniformSpec("ivec3", UniformType.IVEC3)
     private fun v3() = PackUniformSpec("vec3", UniformType.VEC3)
     private fun v4() = PackUniformSpec("vec4", UniformType.VEC4)
     private fun m4() = PackUniformSpec("mat4", UniformType.MAT4)
+    private fun m3() = PackUniformSpec("mat3", UniformType.MAT3)
 }
 
 object LegacyUniformTranslator {
