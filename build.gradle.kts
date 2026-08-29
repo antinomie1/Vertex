@@ -35,7 +35,12 @@ dependencies {
         cfg("net.fabricmc.fabric-api:fabric-lifecycle-events-v1:${project.property("fabric_lifecycle")}")
         cfg("net.fabricmc:fabric-language-kotlin:${project.property("flk_version")}")
     }
- }
+    testImplementation(kotlin("test"))
+}
+
+tasks.test {
+    useJUnitPlatform()
+}
 
 tasks.withType<ProcessResources>().configureEach {
     val version = project.version
@@ -74,4 +79,3 @@ tasks.withType<JavaExec>().configureEach {
 kotlin {
     jvmToolchain(25)
 }
-
