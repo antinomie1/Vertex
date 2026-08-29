@@ -33,6 +33,11 @@ public abstract class LevelRendererTerrainMeshMixin {
         RenderPass pass
     );
 
+    @Inject(method = "lambda$addMainPass$0", at = @At("HEAD"))
+    private void vertex$runEarlyPackPrograms(CallbackInfo ci) {
+        PackChain.beginFrame();
+    }
+
     /** Splits the main pass only when depthtex1 needs the pre-translucent snapshot. */
     @Redirect(
         method = "lambda$addMainPass$0",

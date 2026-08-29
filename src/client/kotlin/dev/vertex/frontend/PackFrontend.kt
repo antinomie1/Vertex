@@ -28,7 +28,7 @@ object PackFrontend {
                 .sorted(SCREEN_ORDER)
                 .toList()
         }
-        require(names.isNotEmpty()) { "$sh: expected deferred, composite, or final shader pair" }
+        require(names.isNotEmpty()) { "$sh: expected setup, begin, prepare, deferred, composite, or final shader pair" }
         return names.map { load(sh, it, options) }
     }
 
@@ -73,10 +73,13 @@ object PackFrontend {
     }
 
     private val SAMPLER = Regex("""uniform\s+[iu]?sampler\w*\s+(\w+)\s*;""")
-    private val SCREEN_PROGRAM = Regex("""(?:deferred\d*|composite\d*|final)""")
+    private val SCREEN_PROGRAM = Regex("""(?:setup|begin|prepare\d*|deferred\d*|composite\d*|final)""")
     private val DRAW_BUFFERS = Regex("""DRAWBUFFERS\s*:\s*([0-9A-Fa-f]+)""")
     private val RENDER_TARGETS = Regex("""RENDERTARGETS\s*:\s*([0-9, ]+)""")
     private val SCREEN_ORDER = compareBy<String>({
-        when { it.startsWith("deferred") -> 0; it.startsWith("composite") -> 1; else -> 2 }
+        when {
+            it == "setup" -> 0; it == "begin" -> 1; it.startsWith("prepare") -> 2
+            it.startsWith("deferred") -> 3; it.startsWith("composite") -> 4; else -> 5
+        }
     }, { it.filter(Char::isDigit).toIntOrNull() ?: 0 })
 }

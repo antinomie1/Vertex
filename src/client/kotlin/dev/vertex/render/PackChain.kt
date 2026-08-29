@@ -38,6 +38,7 @@ import org.joml.Vector4f
  * 不透明地形在主渲染 pass 内由 TerrainMesh 接管，避免二次重绘。
  */
 object PackChain {
+    private var earlyPrograms = emptyList<ScreenProgram>()
     private var screenPrograms = emptyList<ScreenProgram>()
     private var blit: CompiledRenderPipeline? = null
     private var sceneToColor0: CompiledRenderPipeline? = null
@@ -68,6 +69,7 @@ object PackChain {
     private var packBudgetBytes = 512L * MIB
     private var staticBytes = 0L
     private val banks = IntArray(16)
+    private var frameReady = false
 
     fun prepare() {
         if (failed) return
@@ -86,6 +88,8 @@ object PackChain {
     fun draw() {
         if (failed) return
         try {
+            if (!frameReady) beginFrame()
+            if (failed || !frameReady) return
             val device = RenderSystem.getDevice()
             val main = Minecraft.getInstance().gameRenderer.mainRenderTarget()
             val sceneView = main.colorTextureView ?: return
@@ -105,26 +109,13 @@ object PackChain {
                 rp.setUniform("depthtex0", depthViews[0]!!, sampler)
             }
 
-            for ((id, pair) in extraTextures) colorClears[id]?.let { color ->
-                for (texture in pair) encoder.clearColorTexture(texture, color)
-            }
-            banks.fill(0)
+            banks[0] = 0 // world rendering refreshes the scene target after early programs
             if (customColor0()) pass(encoder, "vertex-pack-scene-input", colorView(0, 0, sceneView)) { rp ->
                 RenderSystem.bindDefaultUniforms(rp)
                 rp.setPipeline(sceneToColor0!!)
                 rp.setUniform("InSampler", sceneView, sampler)
             }
-            screenPrograms.forEach { program ->
-                pass(encoder, "vertex-pack-${program.name}", program.outputs, sceneView) { rp ->
-                    RenderSystem.bindDefaultUniforms(rp)
-                    rp.setPipeline(program.pipeline)
-                    program.samplers.forEach { name ->
-                        rp.setUniform(name, program.staticSamplers[name] ?: samplerView(name, banks, sceneView), sampler)
-                    }
-                }
-                for (id in program.outputs) if (program.flips[id] != false) banks[id] = banks[id] xor 1
-                for ((id, flip) in program.flips) if (flip) banks[id] = banks[id] xor 1
-            }
+            executePrograms(encoder, sampler, sceneView, screenPrograms)
             val finalColor = colorView(0, banks[0], sceneView)
             if (finalColor !== sceneView) pass(encoder, "vertex-pack-blit", sceneView) { rp ->
                 RenderSystem.bindDefaultUniforms(rp)
@@ -139,10 +130,54 @@ object PackChain {
                 dev.vertex.Vertex.log.info("[Vertex] dbg frame={} paused={}", dbgFrame, Minecraft.getInstance().isPaused)
             }
             dbgFrame++
+            frameReady = false
         } catch (t: Throwable) {
             failed = true
             dev.vertex.Vertex.log.error("[Vertex] pack chain disabled for this session", t)
         }
+    }
+
+    @JvmStatic
+    fun beginFrame() {
+        if (failed || frameReady) return
+        try {
+            val device = RenderSystem.getDevice()
+            val main = Minecraft.getInstance().gameRenderer.mainRenderTarget()
+            val scene = main.colorTextureView ?: return
+            ensureSize(device, main.width, main.height)
+            ensurePipelines(device)
+            val encoder = device.createCommandEncoder()
+            for ((id, pair) in extraTextures) colorClears[id]?.let { color ->
+                for (texture in pair) encoder.clearColorTexture(texture, color)
+            }
+            banks.fill(0)
+            val sampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR)
+            if (customColor0()) pass(encoder, "vertex-pack-early-input", colorView(0, 0, scene)) { rp ->
+                RenderSystem.bindDefaultUniforms(rp); rp.setPipeline(sceneToColor0!!); rp.setUniform("InSampler", scene, sampler)
+            }
+            executePrograms(encoder, sampler, scene, earlyPrograms)
+            frameReady = true
+        } catch (t: Throwable) {
+            failed = true
+            dev.vertex.Vertex.log.error("[Vertex] early pack programs disabled the pack chain", t)
+        }
+    }
+
+    private fun executePrograms(
+        encoder: CommandEncoder,
+        sampler: com.mojang.renderpearl.api.textures.GpuSampler,
+        scene: GpuTextureView,
+        programs: List<ScreenProgram>,
+    ) = programs.forEach { program ->
+        pass(encoder, "vertex-pack-${program.name}", program.outputs, scene) { rp ->
+            RenderSystem.bindDefaultUniforms(rp)
+            rp.setPipeline(program.pipeline)
+            program.samplers.forEach { name ->
+                rp.setUniform(name, program.staticSamplers[name] ?: samplerView(name, banks, scene), sampler)
+            }
+        }
+        for (id in program.outputs) if (program.flips[id] != false) banks[id] = banks[id] xor 1
+        for ((id, flip) in program.flips) if (flip) banks[id] = banks[id] xor 1
     }
 
     @JvmStatic
@@ -242,7 +277,7 @@ object PackChain {
     }
 
     private fun ensurePipelines(device: com.mojang.renderpearl.api.device.GpuDevice) {
-        if (screenPrograms.isNotEmpty() && blit != null && (!customColor0() || sceneToColor0 != null) &&
+        if ((screenPrograms.isNotEmpty() || earlyPrograms.isNotEmpty()) && blit != null && (!customColor0() || sceneToColor0 != null) &&
             (!needsNormals || normals != null && builtForW == w && builtForH == h)) return
         val runDir = Minecraft.getInstance().gameDirectory.toPath()
         val packRoot = PackRuntime.root(runDir)
@@ -280,7 +315,8 @@ object PackChain {
             normals = compile(device, source, id("pack/post.v"), id("pack/normals.f"),
                 BindGroupLayout.builder().withUniform("depthtex0", UniformType.COMBINED_IMAGE_SAMPLER).build())
         }
-        if (screenPrograms.isEmpty()) screenPrograms = programs.map { program ->
+        if (screenPrograms.isEmpty() && earlyPrograms.isEmpty()) {
+            val compiled = programs.map { program ->
             val samplers = program.samplers.distinct()
             val staticSamplers = samplers.mapNotNull { name ->
                 staticSampler(device, packRoot.resolve("shaders"), semantics, program.name, name)?.let { name to it }
@@ -301,6 +337,9 @@ object PackChain {
             ScreenProgram(program.name, compile(device, programSource, vs, fs, layout,
                 program.outputs.map(colorFormats::get)), samplers, program.outputs,
                 semantics.flips[program.name].orEmpty(), staticSamplers)
+            }
+            earlyPrograms = compiled.filter { it.name == "setup" || it.name == "begin" }
+            screenPrograms = compiled - earlyPrograms.toSet()
         }
         if (blit == null) blit = compile(device, source, id("pack/post.v"), id("pack/blit.f"), BindGroupLayouts.IN_SAMPLER)
         if (customColor0() && sceneToColor0 == null) sceneToColor0 = compile(
@@ -352,7 +391,11 @@ object PackChain {
         program: String,
         name: String,
     ): GpuTextureView? {
-        val stage = if (program.startsWith("deferred")) "deferred" else "composite"
+        val stage = when {
+            program == "setup" -> "setup"; program == "begin" -> "begin"
+            program.startsWith("prepare") -> "prepare"; program.startsWith("deferred") -> "deferred"
+            else -> "composite"
+        }
         val path = if (name == "noisetex") semantics.noisePath else semantics.customTextures[stage]?.get(name)
         if (path == null && name != "noisetex") return null
         val key = path?.let { "file:$it" } ?: "noise:${semantics.noiseResolution}"

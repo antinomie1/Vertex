@@ -111,7 +111,7 @@ object PackSemanticsParser {
     private val NOISE_RESOLUTION = Regex("""const\s+int\s+noiseTextureResolution\s*=\s*(\d+)\s*;""")
     private val NUMBER = Regex("""[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?f?""")
     private val FLIP = Regex("""flip\.([^.]+)\.([^.]+)""")
-    private val TEXTURE = Regex("""texture\.(deferred|composite)\.([^.]+(?:\.[123])?)""")
+    private val TEXTURE = Regex("""texture\.(setup|begin|prepare|deferred|composite)\.([^.]+(?:\.[123])?)""")
     private val COLORTEX = Regex("""colortex(\d|1[0-5])""")
     private val LEGACY_GAUX4 = Regex("""GAUX4FORMAT\s*:\s*(\w+)""")
 }

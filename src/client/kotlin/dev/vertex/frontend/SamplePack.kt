@@ -48,6 +48,7 @@ uniform sampler2D depthtex1;
 uniform sampler2D depthtex2;
 uniform sampler2D noisetex;
 uniform sampler2D lut;
+uniform sampler2D colortex2;
 uniform sampler2D normalsTex;
 varying vec2 texcoord;
 void main() {
@@ -59,6 +60,7 @@ void main() {
     d = min(d, min(texture2D(depthtex1, texcoord).r, texture2D(depthtex2, texcoord).r));
     d += texture2D(noisetex, texcoord * 16.0).r * 0.000001;
     d += texture2D(lut, texcoord).r * 0.000001;
+    d += texture2D(colortex2, texcoord).r * 0.000001;
     o = mix(o, vec3(0.55, 0.75, 1.0), smoothstep(0.006, 0.05, d) * 0.9);
     vec3 n = texture2D(normalsTex, texcoord).rgb * 2.0 - 1.0;
     float li = dot(normalize(n), normalize(vec3(0.35, 0.7, 0.45))) * 0.5 + 0.5;
@@ -80,6 +82,20 @@ void main() {
     gl_FragData[1] = vec4(c, 1.0);
 }
 """
+    val PREPARE_FSH = """#version 120
+uniform sampler2D colortex0;
+varying vec2 texcoord;
+void main() {
+    /* DRAWBUFFERS:0 */
+    gl_FragData[0] = texture2D(colortex0, texcoord);
+}
+"""
+    val BEGIN_FSH = """#version 120
+void main() {
+    /* DRAWBUFFERS:2 */
+    gl_FragData[0] = vec4(0.5, 0.5, 0.5, 1.0);
+}
+"""
 
     fun ensure(dir: Path): Path {
         val root = dir.resolve(DIR_NAME).resolve("shaders")
@@ -91,6 +107,10 @@ void main() {
         Files.writeString(fsh, FSH)
         Files.writeString(root.resolve("composite1.vsh"), VSH)
         Files.writeString(root.resolve("composite1.fsh"), FSH_2)
+        Files.writeString(root.resolve("prepare.vsh"), VSH)
+        Files.writeString(root.resolve("prepare.fsh"), PREPARE_FSH)
+        Files.writeString(root.resolve("begin.vsh"), VSH)
+        Files.writeString(root.resolve("begin.fsh"), BEGIN_FSH)
         Files.writeString(root.resolve("shaders.properties"),
             "flip.composite1.colortex1=false\ntexture.composite.lut=/lut.png\n")
         NativeImage(2, 2, false).use { image ->
