@@ -74,6 +74,8 @@ data class SharedVulkanContext(
                     implementedTier2 = setOf(
                         ProgramFamily.TERRAIN_OPAQUE,
                         ProgramFamily.TERRAIN_WATER,
+                        ProgramFamily.DYNAMIC_WORLD,
+                        ProgramFamily.HAND,
                         ProgramFamily.SCREEN_CHAIN,
                     ),
                 )),

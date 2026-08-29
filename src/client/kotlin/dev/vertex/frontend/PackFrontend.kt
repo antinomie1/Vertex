@@ -64,6 +64,22 @@ object PackFrontend {
         return LoadedProgram("gbuffers_terrain", vsh, fsh, null, samplers, outputs(fsh), emptySet())
     }
 
+    /**
+     * Loads the shared entity/hand program used by the dynamic RenderType bridge.
+     * Iris packs use both singular and plural spellings, so resolve aliases once
+     * here instead of making the renderer probe the filesystem on every draw.
+     */
+    fun loadDynamic(packRoot: Path, options: Map<String, String> = emptyMap()): LoadedProgram? {
+        val sh = packRoot.resolve("shaders")
+        val stem = listOf("gbuffers_entities", "gbuffers_entity", "gbuffers_hand", "gbuffers_textured_lit")
+            .firstOrNull { Files.isRegularFile(sh.resolve("$it.vsh")) && Files.isRegularFile(sh.resolve("$it.fsh")) }
+            ?: return null
+        val vsh = ShaderPreprocessor(listOf(sh), options).process(sh.resolve("$stem.vsh"))
+        val fsh = ShaderPreprocessor(listOf(sh), options).process(sh.resolve("$stem.fsh"))
+        val samplers = SAMPLER.findAll(fsh).map { it.groupValues[1] }.toList()
+        return LoadedProgram(stem, vsh, fsh, null, samplers, outputs(fsh), emptySet())
+    }
+
     fun loadShadow(packRoot: Path, options: Map<String, String> = emptyMap()): LoadedProgram? {
         val sh = packRoot.resolve("shaders")
         val name = listOf("shadow", "shadow_solid").firstOrNull {

@@ -61,6 +61,7 @@ object LegacyTranslator {
         val outputs = varyings.entries.mapIndexed { index, (name, type) ->
             "layout(location = ${3 + index}) out $type $name;"
         }.joinToString("\n")
+        val lightmap = if (body.contains("Sampler2")) "uniform sampler2D Sampler2;" else ""
         return """#version 330
 #extension GL_ARB_separate_shader_objects : require
 
@@ -128,6 +129,89 @@ layout(location = 1) in float cylindricalVertexDistance;
 layout(location = 2) in float chunkVisibility;
 layout(location = 0) out vec4 fragColor;
 """ + body.trimStart() + "\n"
+    }
+
+    /** Translates the legacy entity/hand family onto Minecraft's ENTITY vertex ABI. */
+    fun dynamicVertex(program: LoadedProgram): String {
+        val varyings = varyingDeclarations(program.vertexSource)
+        var body = program.vertexSource
+            .replace(Regex("""^\s*#(?:version|extension)[^\n]*""", RegexOption.MULTILINE), "")
+            .replace(VARYING, "")
+            .replace(Regex("""\battribute\s+(?:(?:lowp|mediump|highp)\s+)?\w+\s+\w+\s*;"""), "")
+            .let(::modernizeTextureCalls)
+            .replace(Regex("""\bgl_ModelViewProjectionMatrix\b"""), "(ProjMat * ModelViewMat)")
+            .replace(Regex("""\bgl_ModelViewMatrix\b"""), "ModelViewMat")
+            .replace(Regex("""\bgl_ProjectionMatrix\b"""), "ProjMat")
+            .replace(Regex("""\bgl_NormalMatrix\b"""), "mat3(ModelViewMat)")
+            .replace(Regex("""\bgl_TextureMatrix\s*\[\s*0\s*]"""), "TextureMat")
+            .replace(Regex("""\bgl_TextureMatrix\s*\[\s*[12]\s*]"""), "mat4(1.0)")
+            .replace(Regex("""\bgl_MultiTexCoord0\b"""), "vec4(UV0, 0.0, 1.0)")
+            .replace(Regex("""\bgl_MultiTexCoord1\b"""), "vec4(UV1, 0.0, 1.0)")
+            .replace(Regex("""\bgl_MultiTexCoord2\b"""), "vec4(UV2, 0.0, 1.0)")
+            .replace(Regex("""\bgl_Color\b"""), "Color")
+            .replace(Regex("""\bgl_Normal\b"""), "Normal")
+            .replace(Regex("""\bgl_Vertex\b"""), "vec4(Position, 1.0)")
+            .replace(Regex("""\bftransform\s*\(\s*\)"""), "(ProjMat * ModelViewMat * vec4(Position, 1.0))")
+
+        val main = Regex("""void\s+main\s*\(\s*\)\s*\{""").find(body)
+            ?: error("${program.name}: dynamic vertex shader has no main()")
+        body = body.replaceRange(main.range, main.value + """
+    vec3 vertexPos = Position;
+    sphericalVertexDistance = fog_spherical_distance(vertexPos);
+    cylindricalVertexDistance = fog_cylindrical_distance(vertexPos);
+""")
+        val outputs = varyings.entries.mapIndexed { index, (name, type) ->
+            "layout(location = ${2 + index}) out $type $name;"
+        }.joinToString("\n")
+        val lightmap = if (body.contains("Sampler2")) "uniform sampler2D Sampler2;" else ""
+        return """#version 330
+#extension GL_ARB_separate_shader_objects : require
+#include <minecraft:fog.glsl>
+#include <minecraft:dynamictransforms.glsl>
+#include <minecraft:projection.glsl>
+#include <minecraft:sample_lightmap.glsl>
+layout(location = 0) in vec3 Position;
+layout(location = 1) in vec4 Color;
+layout(location = 2) in vec2 UV0;
+layout(location = 3) in ivec2 UV1;
+layout(location = 4) in ivec2 UV2;
+layout(location = 5) in vec3 Normal;
+$lightmap
+layout(location = 0) out float sphericalVertexDistance;
+layout(location = 1) out float cylindricalVertexDistance;
+$outputs
+""" + body.trimStart()
+    }
+
+    /** Translates the fragment half while preserving the pack's varying names. */
+    fun dynamicFragment(program: LoadedProgram): String {
+        val varyings = varyingDeclarations(program.vertexSource)
+        val fragmentVaryings = varyingDeclarations(program.fragmentSource)
+        require(fragmentVaryings.keys.all(varyings::containsKey)) { "dynamic fragment references an undeclared varying" }
+        var body = program.fragmentSource
+            .replace(Regex("""^\s*#(?:version|extension)[^\n]*""", RegexOption.MULTILINE), "")
+            .replace(Regex("""uniform\s+sampler2D\s+(texture|gtexture)\s*;"""), "")
+            .replace(Regex("""uniform\s+sampler2D\s+lightmap\s*;"""), "")
+            .replace(VARYING) { match ->
+                val name = match.groupValues[2]
+                "layout(location = ${2 + varyings.keys.indexOf(name)}) in ${match.groupValues[1]} $name;"
+            }
+            .replace(Regex("""\b(texture|gtexture)\b(?!\s*\()"""), "Sampler0")
+            .replace(Regex("""\blightmap\b"""), "Sampler2")
+            .let(::modernizeTextureCalls)
+            .replace(Regex("""\bgl_FragData\s*\[\s*0\s*]"""), "fragColor")
+            .replace(Regex("""\bgl_FragColor\b"""), "fragColor")
+        require(!Regex("""gl_FragData\s*\[\s*[1-9]""").containsMatchIn(body)) {
+            "dynamic fragment programs must write only render target 0"
+        }
+        return """#version 330
+#extension GL_ARB_separate_shader_objects : require
+#include <minecraft:fog.glsl>
+#include <minecraft:dynamictransforms.glsl>
+#include <minecraft:oit.glsl>
+uniform sampler2D Sampler0;
+layout(location = 0) out vec4 fragColor;
+""" + body.trimStart()
     }
 
     fun shadowVertex(program: LoadedProgram): String {

@@ -17,4 +17,14 @@ class FamilyHealth(initial: Map<ProgramFamily, TierDecision>) {
         failures += FamilyFailure(family, reason)
         return true
     }
+
+    /** Keep the game-owned path available when an optional Tier 2 bridge is absent. */
+    @Synchronized
+    fun downgrade(family: ProgramFamily, tier: RenderTier, reason: String): Boolean {
+        val current = decisions.getValue(family)
+        if (current.tier <= tier) return false
+        decisions = decisions + (family to TierDecision(tier, reason))
+        failures += FamilyFailure(family, reason)
+        return true
+    }
 }

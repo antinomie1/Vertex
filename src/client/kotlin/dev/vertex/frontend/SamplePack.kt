@@ -41,6 +41,21 @@ void main() {
     gl_FragData[0] = vec4(col, albedo.a);
 }
 """
+    val DYNAMIC_VSH = """#version 120
+varying vec2 texcoord;
+void main() {
+    gl_Position = ftransform();
+    texcoord = (gl_TextureMatrix[0] * gl_MultiTexCoord0).xy;
+}
+"""
+    val DYNAMIC_FSH = """#version 120
+uniform sampler2D texture;
+varying vec2 texcoord;
+void main() {
+    vec4 c = texture2D(texture, texcoord);
+    gl_FragColor = c;
+}
+"""
     val SHADOW_VSH = """#version 120
 varying vec2 texcoord;
 void main() {
@@ -154,6 +169,8 @@ void main() {
         val tfsh = root.resolve("gbuffers_terrain.fsh")
         Files.writeString(tvsh, TERRAIN_VSH)
         Files.writeString(tfsh, TERRAIN_FSH)
+        Files.writeString(root.resolve("gbuffers_entities.vsh"), DYNAMIC_VSH)
+        Files.writeString(root.resolve("gbuffers_entities.fsh"), DYNAMIC_FSH)
         Files.writeString(root.resolve("shadow.vsh"), SHADOW_VSH)
         Files.writeString(root.resolve("shadow.fsh"), SHADOW_FSH)
         return dir.resolve(DIR_NAME)
