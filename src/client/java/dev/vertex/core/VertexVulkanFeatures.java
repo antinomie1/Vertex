@@ -4,6 +4,8 @@ import com.mojang.renderpearl.backend.vulkan.VulkanFeatureSets;
 import com.mojang.renderpearl.backend.vulkan.init.FeatureSet;
 import com.mojang.renderpearl.backend.vulkan.init.VulkanFeature;
 import java.util.Set;
+import org.lwjgl.vulkan.VkPhysicalDeviceFaultFeaturesEXT;
+import com.mojang.renderpearl.backend.vulkan.init.VulkanPNextStruct;
 
 /** Optional as a group: unsupported hardware must still reach the Tier 0 renderer. */
 public final class VertexVulkanFeatures {
@@ -17,6 +19,14 @@ public final class VertexVulkanFeatures {
             new VulkanFeature(VulkanFeatureSets.VK12_FEATURES_STRUCT, "runtimeDescriptorArray"),
             new VulkanFeature(VulkanFeatureSets.VK12_FEATURES_STRUCT, "drawIndirectCount")
         )
+    );
+
+    public static final FeatureSet DEVICE_FAULT = new FeatureSet(
+        "Vertex Device Fault",
+        Set.of("VK_EXT_device_fault"),
+        Set.of(new VulkanFeature(
+            new VulkanPNextStruct(VkPhysicalDeviceFaultFeaturesEXT.class), "deviceFault"
+        ))
     );
 
     public static volatile boolean injectionObserved;

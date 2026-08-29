@@ -14,6 +14,7 @@ public abstract class VulkanFeatureSetsMixin {
     @Inject(method = "optionalFeatureSets", at = @At("RETURN"), require = 0)
     private static void vertex$offerTier2(CallbackInfoReturnable<Set<FeatureSet>> cir) {
         cir.getReturnValue().add(VertexVulkanFeatures.TIER_2);
+        cir.getReturnValue().add(VertexVulkanFeatures.DEVICE_FAULT);
         VertexVulkanFeatures.injectionObserved = true;
     }
 }
