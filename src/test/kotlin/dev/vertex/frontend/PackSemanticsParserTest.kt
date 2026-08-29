@@ -27,6 +27,7 @@ class PackSemanticsParserTest {
             flip.final.colortex15=true
             texture.noise=/noise.png
             texture.composite.lut=/lut.png
+            texture.final.grain=/grain.png
         """.trimIndent())
 
         val semantics = PackSemanticsParser.load(root)
@@ -38,5 +39,6 @@ class PackSemanticsParserTest {
         assertEquals(true, semantics.flips["final"]?.get(15))
         assertEquals("/noise.png", semantics.noisePath)
         assertEquals("/lut.png", semantics.customTextures["composite"]?.get("lut"))
+        assertEquals("/grain.png", semantics.customTextures["final"]?.get("grain"))
     }
 }

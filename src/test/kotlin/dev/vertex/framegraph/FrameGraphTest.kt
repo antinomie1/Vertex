@@ -21,6 +21,8 @@ class FrameGraphTest {
         val graph = FrameGraphCompiler.compile(resources, nodes)
         assertEquals(listOf(Dependency(0, 1, "a"), Dependency(1, 2, "out")), graph.dependencies)
         assertEquals(setOf("a", "b"), graph.aliasGroups.single { it.size == 2 }.toSet())
+        assertEquals(ResourceLifetime(0, 1), graph.lifetimes["a"])
+        assertEquals(ResourceLifetime(2, 2), graph.lifetimes["b"])
     }
 
     @Test

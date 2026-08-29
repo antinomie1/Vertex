@@ -17,4 +17,13 @@ class RenderScalePolicyTest {
         assertEquals("pack uses texelFetch", decision.reason)
         assertFailsWith<IllegalArgumentException> { RenderScalePolicy.resolve(0.8f, emptyList()) }
     }
+
+    @Test
+    fun `disables scale for absolute fragment coordinates`() {
+        val decision = RenderScalePolicy.resolve(
+            0.75f,
+            listOf("void main() { gl_FragColor = vec4(gl_FragCoord.xy, 0.0, 1.0); }"),
+        )
+        assertEquals(1f, decision.scale)
+    }
 }

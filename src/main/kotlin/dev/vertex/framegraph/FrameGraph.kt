@@ -24,10 +24,15 @@ data class FrameNode(
 
 data class Dependency(val producer: Int, val consumer: Int, val resource: String)
 
+data class ResourceLifetime(val start: Int, val end: Int) {
+    init { require(start >= 0 && end >= start) }
+}
+
 data class CompiledFrameGraph(
     val nodes: List<FrameNode>,
     val dependencies: List<Dependency>,
     val aliasGroups: List<List<String>>,
+    val lifetimes: Map<String, ResourceLifetime> = emptyMap(),
 )
 
 /** Compiles a declared execution order into true dependencies and safe transient aliases. */
@@ -60,7 +65,9 @@ object FrameGraphCompiler {
             val end = nodes.indices.lastOrNull { resource.id in nodes[it].reads } ?: start
             Lifetime(resource, start, end)
         }
-        return CompiledFrameGraph(nodes, dependencies, alias(lifetimes))
+        return CompiledFrameGraph(nodes, dependencies, alias(lifetimes), lifetimes.associate {
+            it.resource.id to ResourceLifetime(it.start, it.end)
+        })
     }
 
     private fun alias(lifetimes: List<Lifetime>): List<List<String>> {

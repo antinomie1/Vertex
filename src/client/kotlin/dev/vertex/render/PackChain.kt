@@ -671,7 +671,7 @@ object PackChain {
         val stage = when {
             program == "setup" -> "setup"; program == "begin" -> "begin"
             program.startsWith("prepare") -> "prepare"; program.startsWith("deferred") -> "deferred"
-            else -> "composite"
+            program == "final" -> "final"; else -> "composite"
         }
         val path = if (name == "noisetex") semantics.noisePath else semantics.customTextures[stage]?.get(name)
         if (path == null && name != "noisetex") return null
