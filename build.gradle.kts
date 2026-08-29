@@ -70,8 +70,6 @@ tasks.withType<JavaExec>().configureEach {
         if (backend.isPresent) args(listOf("--graphicsBackend", backend.get()))
         if (providers.gradleProperty("vertex.validation").orNull == "true") args("--vulkanValidation")
         if (autostop.isPresent) jvmArgs("-Dvertex.autostop=" + autostop.get())
-        val layers = providers.gradleProperty("vertex.layers")
-        if (layers.isPresent) jvmArgs("-Dvertex.layers=" + layers.get())
         val drawMode = providers.gradleProperty("vertex.drawMode")
         if (drawMode.isPresent) jvmArgs("-Dvertex.drawMode=" + drawMode.get())
         val dbg = providers.gradleProperty("vertex.debugReadback")

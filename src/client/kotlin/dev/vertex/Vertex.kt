@@ -12,7 +12,7 @@ object Vertex : ClientModInitializer {
     val log = LoggerFactory.getLogger(MOD_ID)
 
     override fun onInitializeClient() {
-        log.info("[Vertex] init; registering G0 frame seam (docs/DESIGN.md §10)")
+        log.info("[Vertex] init; registering shared-device frame seam")
         VertexRenderer.register()
         ClientLifecycleEvents.CLIENT_STARTED.register { PackChain.prepare() }
         ClientLifecycleEvents.CLIENT_STOPPING.register { PackRuntime.close() }

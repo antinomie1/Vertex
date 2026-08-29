@@ -7,25 +7,19 @@ import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents
 import net.minecraft.client.Minecraft
 
 /**
- * G0+G1 帧缝：LevelRenderEvents.END_MAIN（DESIGN.md §1）。
- * 顺序：G0 叠加条带 → G1 复合链（vignette）。失败即本会话降档。
+ * 世界渲染后的唯一生产帧缝；HUD 由游戏在同一队列上随后合成。
  */
 object VertexRenderer {
     private var booted = false
     private var failed = false
     private var frames = 0L
-    private val layers = (System.getProperty("vertex.layers") ?: "pack").split(',')
-    private fun enabled(name: String) = name in layers
-
     fun register() {
         Vertex.log.info("[Vertex] register(): wiring seams")
         LevelRenderEvents.END_MAIN.register { _ ->
             if (failed) return@register
             try {
                 ensureBoot()
-                if (enabled("overlay")) VertexGpu.drawOverlay()
-                if (enabled("post")) VertexPost.drawChain()
-                if (enabled("pack")) PackChain.draw()
+                PackChain.draw()
                 frames++
                 val stopAfter = System.getProperty("vertex.autostop")?.toLongOrNull()
                 if (stopAfter != null && frames >= stopAfter * 60L) {

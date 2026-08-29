@@ -5,8 +5,7 @@ import java.nio.file.Path
 import dev.vertex.translate.ShaderPreprocessor
 
 /**
- * 包前端 v0：只认 composite.{vsh,fsh}。
- * 提取：varying 名（顶点透传模式）、片元采样器清单、片元源码。
+ * Minimal pack frontend for terrain and composite/final programs.
  */
 data class LoadedProgram(
     val vertexSource: String,
