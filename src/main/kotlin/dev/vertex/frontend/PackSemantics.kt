@@ -47,6 +47,7 @@ data class PackSemantics(
     val noisePath: String?,
     val noiseResolution: Int,
     val customTextures: Map<String, Map<String, String>>,
+    val separateAo: Boolean = false,
 )
 
 /** Reads the shader constants and shaders.properties directives that control render targets. */
@@ -67,7 +68,7 @@ object PackSemanticsParser {
         require(noiseResolution in 1..4096) { "noiseTextureResolution must be in 1..4096" }
         val properties = loadProperties(shaders.resolve("shaders.properties"))
         return PackSemantics(settings, parseFlips(properties), properties.getProperty("texture.noise")?.trim(),
-            noiseResolution, parseCustomTextures(properties))
+            noiseResolution, parseCustomTextures(properties), properties.boolean("separateAo"))
     }
 
     private fun parseShader(source: String, settings: MutableList<ColorBufferSettings>) {
@@ -94,7 +95,7 @@ object PackSemanticsParser {
     }
 
     private fun parseFlips(properties: Properties): Map<String, Map<Int, Boolean>> {
-        return properties.stringPropertyNames().mapNotNull { key ->
+        return properties.stringPropertyNames().sorted().mapNotNull { key ->
             val match = FLIP.matchEntire(key) ?: return@mapNotNull null
             val id = colorId(match.groupValues[2]) ?: return@mapNotNull null
             Triple(match.groupValues[1], id, properties.getProperty(key).trim().toBooleanStrict())
@@ -102,10 +103,13 @@ object PackSemanticsParser {
     }
 
     private fun parseCustomTextures(properties: Properties): Map<String, Map<String, String>> =
-        properties.stringPropertyNames().mapNotNull { key ->
+        properties.stringPropertyNames().sorted().mapNotNull { key ->
             val match = TEXTURE.matchEntire(key) ?: return@mapNotNull null
             Triple(match.groupValues[1], match.groupValues[2].substringBefore('.'), properties.getProperty(key).trim())
         }.groupBy({ it.first }, { it.second to it.third }).mapValues { (_, values) -> values.toMap() }
+
+    private fun Properties.boolean(name: String): Boolean =
+        getProperty(name)?.trim()?.toBooleanStrict() ?: false
 
     fun colorId(name: String): Int? = when (name) {
         "gcolor" -> 0; "gdepth" -> 1; "gnormal" -> 2; "composite" -> 3

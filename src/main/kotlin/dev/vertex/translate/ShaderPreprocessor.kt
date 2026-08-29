@@ -10,6 +10,7 @@ class ShaderPreprocessor(
     private val roots = roots.map { it.toAbsolutePath().normalize() }
     private val options = defines.toMap()
     private val symbols = defines.toMutableMap()
+    private val objectMacros = defines.toMutableMap()
 
     init { require(this.roots.isNotEmpty()) }
 
@@ -64,10 +65,12 @@ class ShaderPreprocessor(
                         val definition = DEFINE.matchEntire(tail) ?: fail(file, line, "invalid #define")
                         val name = definition.groupValues[1]
                         val functionLike = definition.groupValues[2].isNotEmpty()
-                        symbols[name] = if (functionLike) "1" else definition.groupValues[3].ifBlank { "1" }
+                        val value = if (functionLike) "1" else definition.groupValues[3].ifBlank { "1" }
+                        symbols[name] = value
+                        if (functionLike) objectMacros.remove(name) else objectMacros[name] = value
                         output.appendLine(raw)
                     }
-                    "undef" -> { symbols.remove(tail); output.appendLine(raw) }
+                    "undef" -> { symbols.remove(tail); objectMacros.remove(tail); output.appendLine(raw) }
                     else -> output.appendLine(raw)
                 } else output.appendLine()
             }
@@ -88,7 +91,9 @@ class ShaderPreprocessor(
         } ?: throw IllegalArgumentException("shader include not found: $path")
     }
 
-    private fun expandOptions(line: String): String = IDENT.replace(line) { options[it.value] ?: it.value }
+    private fun expandOptions(line: String): String = IDENT.replace(line) {
+        options[it.value] ?: objectMacros[it.value] ?: it.value
+    }
 
     private fun stripComments(source: String): String {
         val out = StringBuilder(source.length)

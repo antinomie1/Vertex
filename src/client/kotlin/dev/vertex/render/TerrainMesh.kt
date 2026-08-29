@@ -14,6 +14,7 @@ import dev.vertex.Vertex
 import dev.vertex.core.SharedVulkanContext
 import dev.vertex.core.RuntimeDiagnostics
 import dev.vertex.frontend.PackRuntime
+import dev.vertex.frontend.PackSemanticsParser
 import dev.vertex.runtime.ProgramFamily
 import dev.vertex.runtime.RenderTier
 import dev.vertex.translate.TerrainRequirementScanner
@@ -77,6 +78,9 @@ object TerrainMesh {
             val runDir = Minecraft.getInstance().gameDirectory.toPath()
             val packRoot = PackRuntime.root(runDir)
             val terrainProg = dev.vertex.frontend.PackFrontend.loadTerrain(packRoot, PackRuntime.options())
+            require(!PackSemanticsParser.load(packRoot, PackRuntime.options()).separateAo) {
+                "separateAo terrain layout is not supported by the vanilla mesh contract"
+            }
             requirements = TerrainRequirementScanner.scan(terrainProg.vertexSource)
             customFormat = format(requirements)
             val translatedVsh = dev.vertex.translate.LegacyTranslator.terrainVertex(terrainProg)

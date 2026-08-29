@@ -5,6 +5,7 @@ import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertFailsWith
 
 class PackSemanticsParserTest {
     @Test
@@ -28,6 +29,7 @@ class PackSemanticsParserTest {
             texture.noise=/noise.png
             texture.composite.lut=/lut.png
             texture.final.grain=/grain.png
+            separateAo=true
         """.trimIndent())
 
         val semantics = PackSemanticsParser.load(root)
@@ -40,5 +42,13 @@ class PackSemanticsParserTest {
         assertEquals("/noise.png", semantics.noisePath)
         assertEquals("/lut.png", semantics.customTextures["composite"]?.get("lut"))
         assertEquals("/grain.png", semantics.customTextures["final"]?.get("grain"))
+        assertEquals(true, semantics.separateAo)
+    }
+
+    @Test
+    fun `rejects invalid boolean semantics`() {
+        val root = Files.createTempDirectory("vertex-semantics-invalid")
+        Files.createDirectory(root.resolve("shaders")).resolve("shaders.properties").writeText("separateAo=maybe")
+        assertFailsWith<IllegalArgumentException> { PackSemanticsParser.load(root) }
     }
 }

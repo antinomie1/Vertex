@@ -49,6 +49,7 @@ class ShaderPreprocessorTest {
                 |#define ENABLED 1
                 |#if ENABLED
                 |vec3 color = TONEMAP(inputColor); // removed
+                |float enabled = ENABLED;
                 |/* two
                 |   lines */
                 |#endif
@@ -57,7 +58,8 @@ class ShaderPreprocessorTest {
         val output = ShaderPreprocessor(listOf(root)).process(root.resolve("main.fsh"))
         assertContains(output, "#define TONEMAP(x)")
         assertContains(output, "TONEMAP(inputColor)")
+        assertContains(output, "float enabled = 1;")
         assertFalse("removed" in output)
-        assertEquals(7, output.count { it == '\n' })
+        assertEquals(8, output.count { it == '\n' })
     }
 }
