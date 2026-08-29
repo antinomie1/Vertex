@@ -8,11 +8,12 @@ class ShaderPreprocessor(
     defines: Map<String, String> = emptyMap(),
 ) {
     private val roots = roots.map { it.toAbsolutePath().normalize() }
+    private val options = defines.toMap()
     private val symbols = defines.toMutableMap()
 
     init { require(this.roots.isNotEmpty()) }
 
-    fun process(entry: Path): String = expand(resolve(entry, null), ArrayDeque())
+    fun process(entry: Path): String = stripComments(expand(resolve(entry, null), ArrayDeque()))
 
     private fun expand(file: Path, stack: ArrayDeque<Path>): String {
         require(file !in stack) { "include cycle: ${(stack + file).joinToString(" -> ")}" }
@@ -24,7 +25,7 @@ class ShaderPreprocessor(
             val line = index + 1
             val directive = DIRECTIVE.matchEntire(raw)?.destructured
             if (directive == null) {
-                if (active.all { it.enabled }) output.appendLine(expandSymbols(raw))
+                output.appendLine(if (active.all { it.enabled }) expandOptions(raw) else "")
                 return@forEachIndexed
             }
             val (name, tailValue) = directive
@@ -38,15 +39,18 @@ class ShaderPreprocessor(
                         else -> Expression(tail, symbols).evaluate()
                     }
                     active.addLast(Conditional(parent, parent && condition, condition))
+                    output.appendLine()
                 }
                 "elif" -> active.replaceLast(file, line) { current ->
                     val condition = !current.branchTaken && Expression(tail, symbols).evaluate()
                     current.copy(enabled = current.parentEnabled && condition, branchTaken = current.branchTaken || condition)
-                }
+                }.also { output.appendLine() }
                 "else" -> active.replaceLast(file, line) { current ->
                     current.copy(enabled = current.parentEnabled && !current.branchTaken, branchTaken = true)
+                }.also { output.appendLine() }
+                "endif" -> if (active.isEmpty()) fail(file, line, "unexpected #endif") else {
+                    active.removeLast(); output.appendLine()
                 }
-                "endif" -> if (active.isEmpty()) fail(file, line, "unexpected #endif") else active.removeLast()
                 else -> if (active.all { it.enabled }) when (name) {
                     "include" -> {
                         val target = INCLUDE.matchEntire(tail)?.groupValues?.get(1)
@@ -57,13 +61,15 @@ class ShaderPreprocessor(
                         output.appendLine("#line ${line + 1} \"${file.toString().replace("\\", "/")}\"")
                     }
                     "define" -> {
-                        val parts = tail.split(Regex("\\s+"), limit = 2)
-                        if (parts.isEmpty() || !IDENT.matches(parts[0])) fail(file, line, "invalid #define")
-                        symbols[parts[0]] = parts.getOrElse(1) { "1" }
+                        val definition = DEFINE.matchEntire(tail) ?: fail(file, line, "invalid #define")
+                        val name = definition.groupValues[1]
+                        val functionLike = definition.groupValues[2].isNotEmpty()
+                        symbols[name] = if (functionLike) "1" else definition.groupValues[3].ifBlank { "1" }
+                        output.appendLine(raw)
                     }
-                    "undef" -> symbols.remove(tail)
+                    "undef" -> { symbols.remove(tail); output.appendLine(raw) }
                     else -> output.appendLine(raw)
-                }
+                } else output.appendLine()
             }
         }
         if (active.isNotEmpty()) fail(file, lines.size, "unterminated conditional")
@@ -82,7 +88,27 @@ class ShaderPreprocessor(
         } ?: throw IllegalArgumentException("shader include not found: $path")
     }
 
-    private fun expandSymbols(line: String): String = IDENT.replace(line) { symbols[it.value] ?: it.value }
+    private fun expandOptions(line: String): String = IDENT.replace(line) { options[it.value] ?: it.value }
+
+    private fun stripComments(source: String): String {
+        val out = StringBuilder(source.length)
+        var index = 0
+        var block = false
+        while (index < source.length) {
+            val c = source[index]
+            val next = source.getOrNull(index + 1)
+            when {
+                block && c == '*' && next == '/' -> { out.append("  "); block = false; index += 2 }
+                block -> { out.append(if (c == '\n') '\n' else ' '); index++ }
+                c == '/' && next == '*' -> { out.append("  "); block = true; index += 2 }
+                c == '/' && next == '/' -> {
+                    while (index < source.length && source[index] != '\n') { out.append(' '); index++ }
+                }
+                else -> { out.append(c); index++ }
+            }
+        }
+        return out.toString()
+    }
 
     private fun fail(file: Path, line: Int, message: String): Nothing =
         throw IllegalArgumentException("$file:$line: $message")
@@ -92,6 +118,7 @@ class ShaderPreprocessor(
     companion object {
         private val DIRECTIVE = Regex("""\s*#\s*(\w+)\b(.*)""")
         private val INCLUDE = Regex("""[<\"]([^>\"]+)[>\"]""")
+        private val DEFINE = Regex("""([A-Za-z_]\w*)(\([^)]*\))?(?:\s+(.*))?""")
         private val IDENT = Regex("""\b[A-Za-z_]\w*\b""")
     }
 }

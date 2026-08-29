@@ -4,6 +4,7 @@ import java.nio.file.Files
 import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertContains
+import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 
@@ -38,5 +39,25 @@ class ShaderPreprocessorTest {
         assertFailsWith<IllegalArgumentException> {
             ShaderPreprocessor(listOf(root)).process(root.resolve("a.glsl"))
         }
+    }
+
+    @Test
+    fun `pack macros survive while comments retain line count`() {
+        val root = Files.createTempDirectory("vertex-preprocessor-macros")
+        root.resolve("main.fsh").writeText(
+            """#define TONEMAP(x) ((x) / (1.0 + (x)))
+                |#define ENABLED 1
+                |#if ENABLED
+                |vec3 color = TONEMAP(inputColor); // removed
+                |/* two
+                |   lines */
+                |#endif
+            """.trimMargin(),
+        )
+        val output = ShaderPreprocessor(listOf(root)).process(root.resolve("main.fsh"))
+        assertContains(output, "#define TONEMAP(x)")
+        assertContains(output, "TONEMAP(inputColor)")
+        assertFalse("removed" in output)
+        assertEquals(7, output.count { it == '\n' })
     }
 }
