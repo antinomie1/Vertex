@@ -6,6 +6,7 @@ import com.mojang.renderpearl.api.GpuFormat
 import com.mojang.renderpearl.api.commands.CommandEncoder
 import com.mojang.renderpearl.api.commands.RenderPass
 import com.mojang.renderpearl.api.commands.RenderPassDescriptor
+import com.mojang.renderpearl.api.commands.GpuQueryPool
 import com.mojang.renderpearl.api.buffers.GpuBuffer
 import com.mojang.renderpearl.api.pipeline.BindGroupLayout
 import com.mojang.renderpearl.api.pipeline.ColorTargetState
@@ -26,6 +27,7 @@ import dev.vertex.runtime.ImageAllocation
 import dev.vertex.runtime.ImageClass
 import dev.vertex.runtime.MemoryBudgetGovernor
 import dev.vertex.runtime.UniformHeap
+import dev.vertex.runtime.PerformanceWindow
 import dev.vertex.translate.LegacyTranslator
 import dev.vertex.translate.PackUniformCatalog
 import net.minecraft.client.Minecraft
@@ -93,6 +95,11 @@ object PackChain {
     private val projectionMatrix = Matrix4f()
     private val matrixScratch = FloatArray(16)
     private val normalScratch = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
+    private var timingPool: GpuQueryPool? = null
+    private var timestampPeriod = 1f
+    private val timingArmed = BooleanArray(2)
+    private val gpuTimes = PerformanceWindow()
+    private var timingsSinceReport = 0
 
     fun prepare() {
         if (failed) return
@@ -145,6 +152,10 @@ object PackChain {
                 rp.setPipeline(blit!!)
                 rp.setUniform("InSampler", finalColor, sampler)
             }
+            timingPool?.let { pool ->
+                encoder.writeTimestamp(pool, uniformSlot * 2 + 1)
+                timingArmed[uniformSlot] = true
+            }
 
 
             if (dbg && dbgFrame % 120L == 0L) {
@@ -170,6 +181,8 @@ object PackChain {
             ensureSize(device, main.width, main.height)
             ensurePipelines(device)
             val encoder = device.createCommandEncoder()
+            collectGpuTiming(frameCounter and 1)
+            timingPool?.let { encoder.writeTimestamp(it, (frameCounter and 1) * 2) }
             updateUniforms(encoder)
             for ((id, pair) in extraTextures) colorClears[id]?.let { color ->
                 for (texture in pair) encoder.clearColorTexture(texture, color)
@@ -383,6 +396,10 @@ object PackChain {
         if (customColor0() && sceneToColor0 == null) sceneToColor0 = compile(
             device, source, id("pack/post.v"), id("pack/blit.f"), BindGroupLayouts.IN_SAMPLER, listOf(colorFormats[0]),
         )
+        if (timingPool == null) runCatching {
+            timingPool = device.createTimestampQueryPool(4)
+            timestampPeriod = device.deviceInfo.timestampPeriod()
+        }.onFailure { dev.vertex.Vertex.log.warn("[Vertex] GPU timestamps unavailable", it) }
 
         builtForW = w; builtForH = h
     }
@@ -421,6 +438,22 @@ object PackChain {
     }
 
     private fun customColor0() = colorFormats[0] != GpuFormat.RGBA8_UNORM
+
+    private fun collectGpuTiming(slot: Int) {
+        val pool = timingPool ?: return
+        if (!timingArmed[slot]) return
+        val start = pool.getValue(slot * 2)
+        val end = pool.getValue(slot * 2 + 1)
+        if (start.isEmpty || end.isEmpty || end.asLong < start.asLong) return
+        gpuTimes.record(((end.asLong - start.asLong) * timestampPeriod / 1_000f).toLong())
+        timingArmed[slot] = false
+        val interval = System.getProperty("vertex.perfLogFrames")?.toIntOrNull()?.coerceAtLeast(1) ?: 600
+        if (++timingsSinceReport >= interval) {
+            timingsSinceReport = 0
+            val p = gpuTimes.snapshot()
+            dev.vertex.Vertex.log.info("[Vertex] pack GPU time: p50={} us p99={} us (n={})", p.p50Micros, p.p99Micros, p.samples)
+        }
+    }
 
     private fun updateUniforms(encoder: CommandEncoder) {
         if (uniformBuffer == null) return
