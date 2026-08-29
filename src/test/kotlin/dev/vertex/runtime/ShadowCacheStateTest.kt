@@ -2,6 +2,7 @@ package dev.vertex.runtime
 
 import kotlin.test.Test
 import kotlin.test.assertFalse
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class ShadowCacheStateTest {
@@ -15,5 +16,19 @@ class ShadowCacheStateTest {
         assertFalse(cache.needsRender(0.06f, 16.0, 15.0))
         cache.invalidate()
         assertTrue(cache.needsRender(0.06f, 16.0, 15.0))
+    }
+
+    @Test
+    fun `section invalidation maps to tiles until a successful draw`() {
+        val cache = ShadowCacheState(0.1f, tileSections = 8)
+        cache.markRendered(0f, 0.0, 0.0)
+        cache.invalidateSection(-1, 16)
+        cache.invalidateSection(7, 17)
+        assertEquals(setOf(ShadowTile(-1, 2), ShadowTile(0, 2)), cache.dirtyTiles())
+        assertTrue(cache.needsRender(0f, 0.0, 0.0))
+        assertEquals(2, cache.pendingSectionCount())
+        cache.markRendered(0f, 0.0, 0.0)
+        assertTrue(cache.dirtyTiles().isEmpty())
+        assertFalse(cache.needsRender(0f, 0.0, 0.0))
     }
 }

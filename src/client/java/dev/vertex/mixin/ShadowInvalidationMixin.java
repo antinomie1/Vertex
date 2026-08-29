@@ -4,6 +4,7 @@ import dev.vertex.render.ShadowRenderer;
 import dev.vertex.render.TerrainCommandCache;
 import net.minecraft.client.renderer.chunk.SectionMesh;
 import net.minecraft.client.renderer.chunk.SectionRenderDispatcher;
+import net.minecraft.core.BlockPos;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -14,7 +15,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 public abstract class ShadowInvalidationMixin {
     @Inject(method = "setSectionMesh", at = @At("RETURN"))
     private void vertex$invalidateShadow(SectionMesh mesh, CallbackInfoReturnable<SectionMesh> cir) {
-        ShadowRenderer.invalidate();
+        BlockPos origin = ((SectionRenderDispatcher.RenderSection)(Object)this).getRenderOrigin();
+        ShadowRenderer.invalidateSection(origin.getX() >> 4, origin.getZ() >> 4);
         TerrainCommandCache.invalidate();
     }
 }

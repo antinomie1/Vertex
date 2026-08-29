@@ -158,6 +158,7 @@ object ShadowRenderer {
                     active = false
                 }
             }
+            cache.markRendered(angle, camera.x, camera.z)
             if (logged.compareAndSet(false, true)) Vertex.log.info("[Vertex] shadow terrain draw verified")
             slot = slot xor 1
         } catch (t: Throwable) {
@@ -169,6 +170,9 @@ object ShadowRenderer {
 
     @JvmStatic
     fun invalidate() = cache.invalidate()
+
+    @JvmStatic
+    fun invalidateSection(sectionX: Int, sectionZ: Int) = cache.invalidateSection(sectionX, sectionZ)
 
     @JvmStatic
     fun compiledFor(pipeline: RenderPipeline): CompiledRenderPipeline? {

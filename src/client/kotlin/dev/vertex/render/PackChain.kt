@@ -38,6 +38,7 @@ import dev.vertex.runtime.PerformanceBaseline
 import dev.vertex.runtime.PerformanceGate
 import dev.vertex.runtime.ProgramFamily
 import dev.vertex.runtime.RenderTier
+import dev.vertex.runtime.RenderTargetBanks
 import dev.vertex.runtime.RenderScalePolicy
 import dev.vertex.runtime.ScreenPassOptimizer
 import dev.vertex.translate.LegacyTranslator
@@ -98,7 +99,7 @@ object PackChain {
     private var targetBytes = 0L
     private var packBudgetBytes = 512L * MIB
     private var staticBytes = 0L
-    private val banks = IntArray(16)
+    private val banks = RenderTargetBanks()
     private var frameReady = false
     private val uniformHeap = UniformHeap(PackUniformCatalog.layout)
     private var uniformBuffer: GpuBuffer? = null
@@ -205,7 +206,7 @@ object PackChain {
             for ((id, pair) in extraTextures) colorClears[id]?.let { color ->
                 for (texture in pair) encoder.clearColorTexture(texture, color)
             }
-            banks.fill(0)
+            banks.reset()
             val sampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR)
             if (dedicatedColor0()) pass(encoder, "vertex-pack-early-input", colorView(0, 0, scene)) { rp ->
                 RenderSystem.bindDefaultUniforms(rp); rp.setPipeline(sceneToColor0!!); rp.setUniform("InSampler", scene, sampler)
@@ -236,8 +237,7 @@ object PackChain {
                 uniformBuffer!!.slice(uniformHeap.segmentOffset(uniformSlot).toLong(), uniformHeap.layout.segmentBytes.toLong()),
             )
         }
-        for (id in program.outputs) if (program.flips[id] != false) banks[id] = banks[id] xor 1
-        for ((id, flip) in program.flips) if (flip) banks[id] = banks[id] xor 1
+        banks.commit(program.outputs, program.flips)
     }
 
     @JvmStatic
@@ -477,7 +477,7 @@ object PackChain {
         builtForW = w; builtForH = h
     }
 
-    private fun samplerView(name: String, banks: IntArray, scene: GpuTextureView): GpuTextureView = when (name) {
+    private fun samplerView(name: String, banks: RenderTargetBanks, scene: GpuTextureView): GpuTextureView = when (name) {
         "depthtex0" -> depthViews[0]!!
         "depthtex1" -> depthViews[1]!!
         "depthtex2" -> depthViews[2]!!
