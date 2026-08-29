@@ -2,7 +2,7 @@ package dev.vertex.render
 
 import com.mojang.blaze3d.systems.RenderSystem
 import dev.vertex.Vertex
-import dev.vertex.core.VkCore
+import dev.vertex.core.SharedVulkanContext
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents
 import net.minecraft.client.Minecraft
 
@@ -14,7 +14,7 @@ object VertexRenderer {
     private var booted = false
     private var failed = false
     private var frames = 0L
-    private val layers = (System.getProperty("vertex.layers") ?: "overlay,post,pack").split(',')
+    private val layers = (System.getProperty("vertex.layers") ?: "pack").split(',')
     private fun enabled(name: String) = name in layers
 
     fun register() {
@@ -33,7 +33,7 @@ object VertexRenderer {
                     Minecraft.getInstance().stop()
                 }
                 if (frames % 600L == 0L) {
-                    Vertex.log.info("[Vertex] alive(level): frame {} on '{}'", frames, VkCore.gpuName)
+                    Vertex.log.info("[Vertex] alive(level): frame {} on '{}'", frames, SharedVulkanContext.attach().gpuName)
                 }
             } catch (t: Throwable) {
                 failed = true
@@ -45,7 +45,10 @@ object VertexRenderer {
     private fun ensureBoot() {
         if (booted) return
         booted = true
-        VkCore.bootstrap()
-        Vertex.log.info("[Vertex] VkCore online: gpu='{}' graphicsFamily={}", VkCore.gpuName, VkCore.graphicsFamily)
+        val context = SharedVulkanContext.attach()
+        Vertex.log.info(
+            "[Vertex] shared Vulkan device: gpu='{}' graphicsFamily={} tiers={}",
+            context.gpuName, context.graphicsFamily, context.decisions.mapValues { it.value.tier },
+        )
     }
 }

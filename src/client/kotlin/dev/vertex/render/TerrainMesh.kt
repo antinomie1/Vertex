@@ -11,6 +11,9 @@ import com.mojang.renderpearl.api.pipeline.ShaderSource
 import com.mojang.renderpearl.api.pipeline.ShaderType
 import com.mojang.renderpearl.api.vertex.VertexFormat
 import dev.vertex.Vertex
+import dev.vertex.core.SharedVulkanContext
+import dev.vertex.runtime.ProgramFamily
+import dev.vertex.runtime.RenderTier
 import net.minecraft.client.Minecraft
 import net.minecraft.client.renderer.RenderPipelines
 import net.minecraft.client.renderer.chunk.ChunkSectionLayer
@@ -50,6 +53,10 @@ object TerrainMesh {
     @JvmStatic
     @Synchronized
     fun prepare() {
+        if (SharedVulkanContext.attach().tier(ProgramFamily.TERRAIN_OPAQUE) != RenderTier.TIER_2) {
+            prepared = null
+            return
+        }
         val device = try {
             RenderSystem.getDevice()
         } catch (t: Throwable) {

@@ -66,6 +66,9 @@ val autostop = providers.gradleProperty("vertex.autostop")
 tasks.withType<JavaExec>().configureEach {
     if (name == "runClient") {
         if (quickplay.isPresent) args(listOf("--quickPlaySingleplayer", quickplay.get()))
+        val backend = providers.gradleProperty("vertex.backend")
+        if (backend.isPresent) args(listOf("--graphicsBackend", backend.get()))
+        if (providers.gradleProperty("vertex.validation").orNull == "true") args("--vulkanValidation")
         if (autostop.isPresent) jvmArgs("-Dvertex.autostop=" + autostop.get())
         val layers = providers.gradleProperty("vertex.layers")
         if (layers.isPresent) jvmArgs("-Dvertex.layers=" + layers.get())

@@ -4,6 +4,9 @@
   "package": "dev.vertex.mixin",
   "compatibilityLevel": "JAVA_25",
   "client": [
+    "VulkanFeatureSetsMixin",
+    "FrontendGpuDeviceAccessor",
+    "VulkanDeviceAccessor",
     "LevelRendererTerrainMeshMixin",
     "SectionCompilerMeshMixin",
     "SectionRenderDispatcherMeshMixin",
