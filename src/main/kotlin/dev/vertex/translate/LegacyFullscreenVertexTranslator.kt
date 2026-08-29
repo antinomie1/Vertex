@@ -36,9 +36,9 @@ object LegacyFullscreenVertexTranslator {
         return "#version 330\n#extension GL_ARB_separate_shader_objects : require\n" + body.trimStart()
     }
 
-    private val TEXTURE_CALL = Regex("""\b(texture2DProj|texture2D|texture3D|textureCube)\s*\(""")
+    private val TEXTURE_CALL = Regex("""\b(texture2DProj|texture2DLod|texture2D|texture3D|textureCube)\s*\(""")
 
     private fun modernizeTextureCalls(source: String) = source.replace(TEXTURE_CALL) {
-        (if (it.groupValues[1] == "texture2DProj") "textureProj" else "texture") + "("
+        (when (it.groupValues[1]) { "texture2DProj" -> "textureProj"; "texture2DLod" -> "textureLod"; else -> "texture" }) + "("
     }
 }

@@ -19,7 +19,7 @@ object LegacyTranslator {
     fun fragment(program: LoadedProgram, formats: List<ColorFormat> = emptyList()): String {
         return LegacyFragmentTranslator.translate(program.fragmentSource, formats.map(ColorFormat::numericType))
     }
-    fun terrainVertex(program: LoadedProgram): String {
+    fun terrainVertex(program: LoadedProgram, separateAo: Boolean = false): String {
         val requirements = TerrainRequirementScanner.scan(program.vertexSource)
         val varyings = varyingDeclarations(program.vertexSource)
         var body = program.vertexSource
@@ -37,7 +37,7 @@ object LegacyTranslator {
             .replace(Regex("""\bgl_MultiTexCoord0\b"""), "vec4(UV0, 0.0, 1.0)")
             .replace(Regex("""\bgl_MultiTexCoord1\b"""), "vec4(vec2(UV2) / 256.0 + vec2(1.0 / 32.0), 0.0, 1.0)")
             .replace(Regex("""\bgl_MultiTexCoord2\b"""), "vec4(UV0, 0.0, 1.0)")
-            .replace(Regex("""\bgl_Color\b"""), "(Color * sample_lightmap(Sampler2, UV2))")
+            .replace(Regex("""\bgl_Color\b"""), "(${if (separateAo) "Color2" else "Color"} * sample_lightmap(Sampler2, UV2))")
             .replace(Regex("""\bgl_Normal\b"""), "Normal")
             .replace(Regex("""\bgl_Vertex\b"""), "vec4(pos, 1.0)")
             .replace(Regex("""\bftransform\s*\(\s*\)"""), "(ProjMat * ModelViewMat * vec4(pos, 1.0))")
@@ -60,7 +60,7 @@ object LegacyTranslator {
     #endif
 """)
         val outputs = varyings.entries.mapIndexed { index, (name, type) ->
-            "layout(location = ${3 + index}) out $type $name;"
+            "layout(location = ${if (separateAo) 4 + index else 3 + index}) out $type $name;"
         }.joinToString("\n")
         return """#version 330
 #extension GL_ARB_separate_shader_objects : require
@@ -76,17 +76,18 @@ object LegacyTranslator {
 
 layout(location = 0) in vec3 Position;
 layout(location = 1) in vec4 Color;
-layout(location = 2) in vec2 UV0;
-layout(location = 3) in ivec2 UV1;
-layout(location = 4) in ivec2 UV2;
+${if (separateAo) "layout(location = 2) in vec4 Color2;" else ""}
+layout(location = ${if (separateAo) 3 else 2}) in vec2 UV0;
+layout(location = ${if (separateAo) 4 else 3}) in ivec2 UV1;
+layout(location = ${if (separateAo) 5 else 4}) in ivec2 UV2;
 #ifdef MULTIDRAW_TERRAIN
-layout(location = 5) in ivec3 ChunkPosition;
-layout(location = 6) in float ChunkVisibility;
-layout(location = ${if (requirements.midTexCoord) 8 else 7}) in vec3 Normal;
+layout(location = ${if (separateAo) 6 else 5}) in ivec3 ChunkPosition;
+layout(location = ${if (separateAo) 7 else 6}) in float ChunkVisibility;
+layout(location = ${if (separateAo) (if (requirements.midTexCoord) 9 else 8) else (if (requirements.midTexCoord) 8 else 7)}) in vec3 Normal;
 #else
-layout(location = ${if (requirements.midTexCoord) 6 else 5}) in vec3 Normal;
+layout(location = ${if (separateAo) (if (requirements.midTexCoord) 7 else 6) else (if (requirements.midTexCoord) 6 else 5)}) in vec3 Normal;
 #endif
-${if (requirements.midTexCoord) "#ifdef MULTIDRAW_TERRAIN\nlayout(location = 7) in vec2 UV3;\n#else\nlayout(location = 5) in vec2 UV3;\n#endif" else ""}
+${if (requirements.midTexCoord) "#ifdef MULTIDRAW_TERRAIN\nlayout(location = ${if (separateAo) 8 else 7}) in vec2 UV3;\n#else\nlayout(location = ${if (separateAo) 6 else 5}) in vec2 UV3;\n#endif" else ""}
 uniform sampler2D Sampler2;
 layout(location = 0) out float sphericalVertexDistance;
 layout(location = 1) out float cylindricalVertexDistance;
@@ -95,19 +96,20 @@ $outputs
 """ + body.trimStart() + "\n"
     }
 
-    fun terrainFragment(program: LoadedProgram): String {
+    fun terrainFragment(program: LoadedProgram, separateAo: Boolean = false): String {
         val varyings = varyingDeclarations(program.vertexSource)
         val fragmentVaryings = varyingDeclarations(program.fragmentSource)
         require(fragmentVaryings.keys.all(varyings::containsKey)) { "terrain fragment references an undeclared varying" }
         var body = program.fragmentSource
             .replace(Regex("""^#version\s+\d+[^\n]*""", RegexOption.MULTILINE), "")
             .replace(Regex("""^#extension[^\n]*""", RegexOption.MULTILINE), "")
-            .replace(Regex("""uniform\s+sampler2D\s+(texture|gtexture)\s*;"""), "")
-            .replace(Regex("""uniform\s+sampler2D\s+lightmap\s*;"""), "")
-            .let { replaceVaryingInputs(it, varyings, 3) }
+            .replace(Regex("""uniform\s+[iu]?sampler\w*\s+\w+\s*;"""), "")
+            .let { replaceVaryingInputs(it, varyings, if (separateAo) 4 else 3) }
             .replace(Regex("""texture2D\s*\("""), "texture(")
             .replace(Regex("""\b(texture|gtexture)\b(?!\s*\()"""), "Sampler0")
             .replace(Regex("""\blightmap\b"""), "Sampler2")
+            .replace(Regex("""\bgl_FragData\s*\[\s*0\s*]"""), "fragColor")
+            .replace(Regex("""\bgl_FragColor\b"""), "fragColor")
             .let(::modernizeTextureCalls)
             .let(LegacyUniformTranslator::translate)
         return """#version 330
@@ -121,6 +123,7 @@ $outputs
     #include <minecraft:chunksection.glsl>
 #endif
 uniform sampler2D Sampler0;
+${if (program.samplers.contains("noisetex")) "uniform sampler2D noisetex;" else ""}
 layout(location = 0) in float sphericalVertexDistance;
 layout(location = 1) in float cylindricalVertexDistance;
 layout(location = 2) in float chunkVisibility;
@@ -437,10 +440,10 @@ layout(std140) uniform ShadowUniforms { mat4 vertexShadowMvp; };
 """
 
     private val VARYING = Regex("""varying\s+(?:(?:lowp|mediump|highp)\s+)?(\w+)\s+([^;]+);""")
-    private val TEXTURE_CALL = Regex("""\b(texture2DProj|texture2D|texture3D|textureCube)\s*\(""")
+    private val TEXTURE_CALL = Regex("""\b(texture2DProj|texture2DLod|texture2D|texture3D|textureCube)\s*\(""")
 
     private fun modernizeTextureCalls(source: String) = source.replace(TEXTURE_CALL) {
-        (if (it.groupValues[1] == "texture2DProj") "textureProj" else "texture") + "("
+        (when (it.groupValues[1]) { "texture2DProj" -> "textureProj"; "texture2DLod" -> "textureLod"; else -> "texture" }) + "("
     }
 
     private fun replaceVaryingInputs(source: String, varyings: Map<String, String>, base: Int) =

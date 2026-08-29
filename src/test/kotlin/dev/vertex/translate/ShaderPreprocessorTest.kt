@@ -40,6 +40,15 @@ class ShaderPreprocessorTest {
     }
 
     @Test
+    fun `keeps statement terminators when macro has inline documentation`() {
+        val root = Files.createTempDirectory("vertex-preprocessor-inline-comment")
+        root.resolve("settings.glsl").writeText("#define SCALE 1.0 //[0.0 2.0]\n")
+        val source = root.resolve("main.glsl")
+        source.writeText("#include \"settings.glsl\"\nfloat value = SCALE;\n")
+        assertContains(ShaderPreprocessor(listOf(root)).process(source), "float value = 1.0;")
+    }
+
+    @Test
     fun `include cycles fail with source context`() {
         val root = Files.createTempDirectory("vertex-preprocessor-cycle")
         root.resolve("a.glsl").writeText("#include \"b.glsl\"\n")

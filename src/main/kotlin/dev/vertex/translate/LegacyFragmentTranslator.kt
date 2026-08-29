@@ -20,9 +20,7 @@ object LegacyFragmentTranslator {
                 "layout(location = ${location++}) in ${match.groupValues[1]} ${raw.trim()};"
             }
         }
-        body = body.replace(TEXTURE_CALL) {
-            (if (it.groupValues[1] == "texture2DProj") "textureProj" else "texture") + "("
-        }
+        body = body.replace(TEXTURE_CALL) { textureFunction(it.groupValues[1]) + "(" }
 
         val legacyOutputs = fragData.findAll(body).map { it.groupValues[1].toInt() }.toMutableSet()
         if ("gl_FragColor" in body) legacyOutputs += 0
@@ -72,7 +70,13 @@ object LegacyFragmentTranslator {
     private val ASSIGNMENT = Regex("""\bgl_FragData\s*\[\s*(\d+)\s*]\s*=\s*([^;]+);""")
     private val FRAG_COLOR_ASSIGNMENT = Regex("""\bgl_FragColor\s*=\s*([^;]+);""")
     private val MODERN_OUTPUT = Regex("""layout\s*\(\s*location\s*=\s*(\d+)\s*\)\s*out\s+(vec4|ivec4|uvec4)\s+\w+\s*;""")
-    private val TEXTURE_CALL = Regex("""\b(texture2DProj|texture2D|texture3D|textureCube)\s*\(""")
+    private val TEXTURE_CALL = Regex("""\b(texture2DProj|texture2DLod|texture2D|texture3D|textureCube)\s*\(""")
+
+    private fun textureFunction(name: String) = when (name) {
+        "texture2DProj" -> "textureProj"
+        "texture2DLod" -> "textureLod"
+        else -> "texture"
+    }
 
     private val BUFFER_DIRECTIVE = Regex(
         """^\s*const\s+(?:int|bool|vec4)\s+\w+(?:Format|Clear|ClearColor)\s*=.*;\s*$""",

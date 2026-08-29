@@ -13,15 +13,15 @@ object PackUniformCatalog {
         "frameTime" to f(), "frameTimeCounter" to f(), "rainStrength" to f(), "wetness" to f(),
         "eyeAltitude" to f(), "sunAngle" to f(), "shadowAngle" to f(), "nightVision" to f(),
         "blindness" to f(), "darknessFactor" to f(), "screenBrightness" to f(), "centerDepthSmooth" to f(),
-        "rainfall" to f(), "temperature" to f(), "fogDensity" to f(), "fogStart" to f(), "fogEnd" to f(),
+        "rainfall" to f(), "temperature" to f(), "fogStart" to f(), "fogEnd" to f(),
         "endFlashIntensity" to f(), "shadowFade" to f(), "timeAngle" to f(), "timeBrightness" to f(),
         "blindFactor" to f(), "dhFarPlane" to f(), "dhNearPlane" to f(), "framemod2" to f(),
         "framemod8" to f(), "isBasalt" to f(), "isCold" to f(), "isCrimson" to f(), "isDesert" to f(),
         "isJungle" to f(), "isMesa" to f(), "isMushroom" to f(), "isSavanna" to f(), "isSwamp" to f(),
         "isValley" to f(), "isWarped" to f(),
-        "darknessLightFactor" to f(), "heldBlockLightValue" to f(), "heldBlockLightValue2" to f(),
+        "darknessLightFactor" to f(), "heldBlockLightValue" to i(), "heldBlockLightValue2" to i(),
         "playerMood" to f(), "constantMood" to f(), "thunderStrength" to f(), "cloudTime" to f(),
-        "cloudHeight" to f(), "pi" to f(), "frameTimeSmooth" to f(), "frameCounter" to i(), "worldTime" to i(),
+        "cloudHeight" to f(), "frameTimeSmooth" to f(), "frameCounter" to i(), "worldTime" to i(),
         "worldDay" to i(), "moonPhase" to i(), "isEyeInWater" to i(), "hideGUI" to b(), "biome" to i(),
         "biome_category" to i(), "biome_precipitation" to i(), "heldItemId" to i(), "heldItemId2" to i(),
         "entityId" to i(), "blockEntityId" to i(), "currentRenderedItemId" to i(), "renderStage" to i(),
@@ -82,8 +82,9 @@ object LegacyUniformTranslator {
     }.toSet()
 
     fun translate(source: String): String {
-        if (uniforms(source).isEmpty()) return source
-        return PackUniformCatalog.block + DECLARATION.replace(source, "")
+        val normalized = LegacyGlslSyntax.translate(source)
+        if (uniforms(normalized).isEmpty()) return normalized
+        return PackUniformCatalog.block + DECLARATION.replace(normalized, "")
     }
 
     private val DECLARATION = Regex(

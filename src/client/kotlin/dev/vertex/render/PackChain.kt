@@ -95,6 +95,7 @@ object PackChain {
     private val extraViews = hashMapOf<Int, Array<GpuTextureView>>()
     private val staticTextures = hashMapOf<String, GpuTexture>()
     private val staticBindings = hashMapOf<String, TextureBinding>()
+    private val staticByName = hashMapOf<String, TextureBinding>()
     private val textureSamplers = hashMapOf<TextureFilter, GpuSampler>()
     private var targetBytes = 0L
     private var packBudgetBytes = 512L * MIB
@@ -144,7 +145,7 @@ object PackChain {
         blit = null; sceneToColor0 = null; normals = null; depthScale = null
         tempTex = null; tempView = null; normalTex = null; normalView = null
         depthTextures.fill(null); depthViews.fill(null)
-        extraTextures.clear(); extraViews.clear(); staticTextures.clear(); staticBindings.clear(); textureSamplers.clear()
+        extraTextures.clear(); extraViews.clear(); staticTextures.clear(); staticBindings.clear(); staticByName.clear(); textureSamplers.clear()
         uniformBuffer = null; timingPool = null; frameReady = false; failed = false
         scaleResolved = false; builtForW = 0; builtForH = 0; w = 0; h = 0
         targetBytes = 0; staticBytes = 0; needsNormals = false; neededDepths = emptySet(); activeColors = emptySet()
@@ -289,6 +290,25 @@ object PackChain {
 
     @JvmStatic
     fun needsDepth(id: Int) = id in neededDepths
+
+    /** Binds the current frame's pack uniforms to game-owned render passes. */
+    @JvmStatic
+    fun bindUniforms(pass: RenderPass) {
+        val buffer = uniformBuffer ?: return
+        runCatching {
+            pass.setUniform(
+                "VertexPackUniforms",
+                buffer.slice(uniformHeap.segmentOffset(uniformSlot).toLong(), uniformHeap.layout.segmentBytes.toLong()),
+            )
+        }
+    }
+
+    @JvmStatic
+    fun bindTerrainSamplers(pass: RenderPass, sampler: GpuSampler, atlas: GpuTextureView) {
+        pass.setUniform("Sampler0", atlas, sampler)
+        staticByName["noisetex"]?.let { pass.setUniform("noisetex", it.view, it.sampler) }
+        bindUniforms(pass)
+    }
 
     private fun enabled() = !failed &&
         SharedVulkanContext.attach().tier(ProgramFamily.SCREEN_CHAIN) == RenderTier.TIER_2
@@ -620,7 +640,6 @@ object PackChain {
         uniformHeap.putFloat(uniformSlot, "sunAngle", angle / (Math.PI * 2.0).toFloat())
         uniformHeap.putFloat(uniformSlot, "shadowAngle", angle / (Math.PI * 2.0).toFloat())
         uniformHeap.putFloat(uniformSlot, "screenBrightness", mc.options.gamma().get().toFloat())
-        uniformHeap.putFloat(uniformSlot, "pi", Math.PI.toFloat())
         val rain = mc.level?.getRainLevel(partialTick) ?: 0f
         uniformHeap.putFloat(uniformSlot, "rainStrength", rain)
         uniformHeap.putFloat(uniformSlot, "wetness", rain)
@@ -713,7 +732,7 @@ object PackChain {
         val path = if (name == "noisetex") semantics.noisePath else semantics.customTextures[stage]?.get(name)
         if (path == null && name != "noisetex") return null
         val key = path?.let { "file:$it" } ?: "noise:${semantics.noiseResolution}"
-        return staticBindings.getOrPut(key) {
+        val binding = staticBindings.getOrPut(key) {
             val image = path?.let { readImage(shaders, it) } ?: generateNoise(semantics.noiseResolution)
             val filtering = path?.let { readFiltering(shaders, it) } ?: TextureFilter(blur = false, clamp = false)
             image.use {
@@ -742,6 +761,8 @@ object PackChain {
                 TextureBinding(device.createTextureView(texture), sampler)
             }
         }
+        staticByName[name] = binding
+        return binding
     }
 
     private fun readImage(shaders: Path, value: String): NativeImage {

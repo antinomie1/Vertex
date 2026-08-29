@@ -30,6 +30,7 @@ object TerrainCommandCache {
     @Suppress("CAST_NEVER_SUCCEEDS") // Mixin adds both accessor interfaces at runtime.
     fun render(sections: ChunkSectionsToRender, group: ChunkSectionLayerGroup, pass: RenderPass,
                sampler: GpuSampler, atlas: GpuTextureView, wireframe: Boolean) {
+        PackChain.bindTerrainSamplers(pass, sampler, atlas)
         if (group != ChunkSectionLayerGroup.OPAQUE || !TerrainMesh.isPrepared() || sections !is ChunkSectionsToRender.DrawIndirect) {
             sections.renderGroup(group, pass, sampler, atlas, wireframe)
             return

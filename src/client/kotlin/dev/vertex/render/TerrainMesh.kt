@@ -5,6 +5,8 @@ import com.mojang.blaze3d.vertex.DefaultVertexFormat
 import com.mojang.renderpearl.api.GpuFormat
 import com.mojang.renderpearl.api.device.GpuDevice
 import com.mojang.renderpearl.api.pipeline.ColorTargetState
+import com.mojang.renderpearl.api.pipeline.BindGroupLayout
+import com.mojang.renderpearl.api.pipeline.UniformType
 import com.mojang.renderpearl.api.pipeline.CompiledRenderPipeline
 import com.mojang.renderpearl.api.pipeline.RenderPipeline
 import com.mojang.renderpearl.api.pipeline.ShaderSource
@@ -40,12 +42,16 @@ import kotlin.jvm.JvmStatic
 object TerrainMesh {
     @Volatile private var customFormat = format(TerrainRequirements(false, false, false, false))
     @Volatile private var requirements = TerrainRequirements(false, false, false, false)
+    @Volatile private var separateAo = false
+    @Volatile private var noiseSampler = false
 
     private val currentEntityPayload = ThreadLocal<Int>()
     private val currentMidUv = ThreadLocal.withInitial { FloatArray(2) }
     private val midUvActive = ThreadLocal.withInitial { false }
     private val shaderId = Identifier.fromNamespaceAndPath("vertex", "terrain_mesh")
-    private val terrainLayers = ChunkSectionLayer.values().toSet()
+    // Fluid/translucent meshes use a different vanilla contract and are handled by
+    // the water family; keep the widened opaque format off those buffers.
+    private val terrainLayers = setOf(ChunkSectionLayer.SOLID, ChunkSectionLayer.CUTOUT)
 
     private val indirectLogged = AtomicBoolean()
     private val separateLogged = AtomicBoolean()
@@ -57,7 +63,9 @@ object TerrainMesh {
         prepared?.compiled?.values?.distinct()?.forEach { runCatching { it.close() } }
         prepared = null
         requirements = TerrainRequirements(false, false, false, false)
-        customFormat = format(requirements)
+        separateAo = false
+        noiseSampler = false
+        customFormat = format(requirements, separateAo)
         TerrainCommandCache.invalidate()
     }
 
@@ -79,13 +87,12 @@ object TerrainMesh {
             val runDir = Minecraft.getInstance().gameDirectory.toPath()
             val packRoot = PackRuntime.root(runDir)
             val terrainProg = dev.vertex.frontend.PackFrontend.loadTerrain(packRoot, PackRuntime.options())
-            require(!PackSemanticsParser.load(packRoot, PackRuntime.options()).separateAo) {
-                "separateAo terrain layout is not supported by the vanilla mesh contract"
-            }
+            separateAo = PackSemanticsParser.load(packRoot, PackRuntime.options()).separateAo
+            noiseSampler = terrainProg.samplers.contains("noisetex")
             requirements = TerrainRequirementScanner.scan(terrainProg.vertexSource)
-            customFormat = format(requirements)
-            val translatedVsh = dev.vertex.translate.LegacyTranslator.terrainVertex(terrainProg)
-            val translatedFsh = dev.vertex.translate.LegacyTranslator.terrainFragment(terrainProg)
+            customFormat = format(requirements, separateAo)
+            val translatedVsh = dev.vertex.translate.LegacyTranslator.terrainVertex(terrainProg, separateAo)
+            val translatedFsh = dev.vertex.translate.LegacyTranslator.terrainFragment(terrainProg, separateAo)
             val source = shaderSource(translatedVsh, translatedFsh)
             val solid = createPipelinePair(ChunkSectionLayer.SOLID)
             val cutout = createPipelinePair(ChunkSectionLayer.CUTOUT)
@@ -179,8 +186,14 @@ object TerrainMesh {
     }
 
     @JvmStatic fun fillExtraVertex(consumer: com.mojang.blaze3d.vertex.VertexConsumer) {
-        if (midUvActive.get()) currentMidUv.get().let { consumer.setUv3(it[0], it[1]) }
+        if (requirements.midTexCoord) {
+            val uv = currentMidUv.get()
+            if (!midUvActive.get()) { uv[0] = 0f; uv[1] = 0f }
+            consumer.setUv3(uv[0], uv[1])
+        }
     }
+
+    @JvmStatic fun needsSeparateAo() = separateAo && prepared != null
 
     @JvmStatic fun clearQuadPayload() = midUvActive.set(false)
 
@@ -216,6 +229,11 @@ object TerrainMesh {
             .withVertexShader(shaderId)
             .withFragmentShader(shaderId)
             .withVertexBinding(0, customFormat)
+            .withBindGroupLayout(BindGroupLayout.builder()
+                .withUniform("Sampler0", UniformType.COMBINED_IMAGE_SAMPLER)
+                .apply { if (noiseSampler) withUniform("noisetex", UniformType.COMBINED_IMAGE_SAMPLER) }
+                .withUniform("VertexPackUniforms", UniformType.UNIFORM_BUFFER)
+                .build())
         if (layer == ChunkSectionLayer.CUTOUT) {
             builder.withShaderDefine("ALPHA_CUTOUT", 0.5f)
         }
@@ -260,9 +278,10 @@ object TerrainMesh {
         val compiled: IdentityHashMap<RenderPipeline, CompiledRenderPipeline>,
     )
 
-    private fun format(requirements: TerrainRequirements) = VertexFormat.builder(0)
+    private fun format(requirements: TerrainRequirements, separateAo: Boolean = false) = VertexFormat.builder(0)
         .addAttribute("Position", GpuFormat.RGB32_FLOAT)
         .addAttribute("Color", GpuFormat.RGBA8_UNORM)
+        .apply { if (separateAo) addAttribute("Color2", GpuFormat.RGBA8_UNORM) }
         .addAttribute("UV0", GpuFormat.RG32_FLOAT)
         .addAttribute("UV1", GpuFormat.RG16_SINT)
         .addAttribute("UV2", GpuFormat.RG16_SINT)

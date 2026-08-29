@@ -65,7 +65,12 @@ class ShaderPreprocessor(
                         val definition = DEFINE.matchEntire(tail) ?: fail(file, line, "invalid #define")
                         val name = definition.groupValues[1]
                         val functionLike = definition.groupValues[2].isNotEmpty()
-                        val value = if (functionLike) "1" else definition.groupValues[3].ifBlank { "1" }
+                        // Do not substitute inline documentation into statements: once the
+                        // comment is stripped it would also swallow the statement terminator.
+                        val value = if (functionLike) "1" else definition.groupValues[3]
+                            .substringBefore("//")
+                            .trim()
+                            .ifBlank { "1" }
                         symbols[name] = value
                         if (functionLike) objectMacros.remove(name) else objectMacros[name] = value
                         output.appendLine(raw)
