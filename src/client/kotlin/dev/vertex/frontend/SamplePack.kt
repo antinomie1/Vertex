@@ -56,6 +56,26 @@ void main() {
     gl_FragColor = c;
 }
 """
+    val SKY_VSH = """#version 120
+void main() { gl_Position = ftransform(); }
+"""
+    val SKY_FSH = """#version 120
+void main() { gl_FragColor = vec4(0.35, 0.55, 0.95, 1.0); }
+"""
+    val WEATHER_VSH = """#version 120
+varying vec2 texcoord;
+void main() { gl_Position = ftransform(); texcoord = gl_MultiTexCoord0.xy; }
+"""
+    val WEATHER_FSH = """#version 120
+varying vec2 texcoord;
+void main() { gl_FragColor = vec4(0.8, 0.9, 1.0, 0.35); }
+"""
+    val PARTICLE_VSH = WEATHER_VSH
+    val PARTICLE_FSH = """#version 120
+uniform sampler2D texture;
+varying vec2 texcoord;
+void main() { gl_FragColor = texture2D(texture, texcoord); }
+"""
     val SHADOW_VSH = """#version 120
 varying vec2 texcoord;
 void main() {
@@ -171,6 +191,12 @@ void main() {
         Files.writeString(tfsh, TERRAIN_FSH)
         Files.writeString(root.resolve("gbuffers_entities.vsh"), DYNAMIC_VSH)
         Files.writeString(root.resolve("gbuffers_entities.fsh"), DYNAMIC_FSH)
+        Files.writeString(root.resolve("gbuffers_skybasic.vsh"), SKY_VSH)
+        Files.writeString(root.resolve("gbuffers_skybasic.fsh"), SKY_FSH)
+        Files.writeString(root.resolve("gbuffers_weather.vsh"), WEATHER_VSH)
+        Files.writeString(root.resolve("gbuffers_weather.fsh"), WEATHER_FSH)
+        Files.writeString(root.resolve("gbuffers_particles.vsh"), PARTICLE_VSH)
+        Files.writeString(root.resolve("gbuffers_particles.fsh"), PARTICLE_FSH)
         Files.writeString(root.resolve("shadow.vsh"), SHADOW_VSH)
         Files.writeString(root.resolve("shadow.fsh"), SHADOW_FSH)
         return dir.resolve(DIR_NAME)

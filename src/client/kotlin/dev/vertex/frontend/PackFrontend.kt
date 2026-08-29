@@ -70,15 +70,17 @@ object PackFrontend {
      * here instead of making the renderer probe the filesystem on every draw.
      */
     fun loadDynamic(packRoot: Path, options: Map<String, String> = emptyMap()): LoadedProgram? {
-        val sh = packRoot.resolve("shaders")
-        val stem = listOf("gbuffers_entities", "gbuffers_entity", "gbuffers_hand", "gbuffers_textured_lit")
-            .firstOrNull { Files.isRegularFile(sh.resolve("$it.vsh")) && Files.isRegularFile(sh.resolve("$it.fsh")) }
-            ?: return null
-        val vsh = ShaderPreprocessor(listOf(sh), options).process(sh.resolve("$stem.vsh"))
-        val fsh = ShaderPreprocessor(listOf(sh), options).process(sh.resolve("$stem.fsh"))
-        val samplers = SAMPLER.findAll(fsh).map { it.groupValues[1] }.toList()
-        return LoadedProgram(stem, vsh, fsh, null, samplers, outputs(fsh), emptySet())
+        return loadPair(packRoot, listOf("gbuffers_entities", "gbuffers_entity", "gbuffers_hand", "gbuffers_textured_lit"), options)
     }
+
+    fun loadParticle(packRoot: Path, options: Map<String, String> = emptyMap()): LoadedProgram? =
+        loadPair(packRoot, listOf("gbuffers_particles", "gbuffers_particle"), options)
+
+    fun loadSky(packRoot: Path, options: Map<String, String> = emptyMap()): LoadedProgram? =
+        loadPair(packRoot, listOf("gbuffers_skybasic", "gbuffers_sky"), options)
+
+    fun loadWeather(packRoot: Path, options: Map<String, String> = emptyMap()): LoadedProgram? =
+        loadPair(packRoot, listOf("gbuffers_weather", "gbuffers_weather_basic"), options)
 
     fun loadShadow(packRoot: Path, options: Map<String, String> = emptyMap()): LoadedProgram? {
         val sh = packRoot.resolve("shaders")
@@ -86,6 +88,16 @@ object PackFrontend {
             Files.isRegularFile(sh.resolve("$it.vsh")) && Files.isRegularFile(sh.resolve("$it.fsh"))
         } ?: return null
         return load(sh, name, options)
+    }
+
+    private fun loadPair(packRoot: Path, aliases: List<String>, options: Map<String, String>): LoadedProgram? {
+        val sh = packRoot.resolve("shaders")
+        val stem = aliases.firstOrNull { Files.isRegularFile(sh.resolve("$it.vsh")) && Files.isRegularFile(sh.resolve("$it.fsh")) }
+            ?: return null
+        val vsh = ShaderPreprocessor(listOf(sh), options).process(sh.resolve("$stem.vsh"))
+        val fsh = ShaderPreprocessor(listOf(sh), options).process(sh.resolve("$stem.fsh"))
+        val samplers = SAMPLER.findAll(fsh).map { it.groupValues[1] }.toList()
+        return LoadedProgram(stem, vsh, fsh, null, samplers, outputs(fsh), emptySet())
     }
 
     private fun outputs(source: String): List<Int> {

@@ -76,6 +76,7 @@ data class SharedVulkanContext(
                         ProgramFamily.TERRAIN_WATER,
                         ProgramFamily.DYNAMIC_WORLD,
                         ProgramFamily.HAND,
+                        ProgramFamily.SKY_WEATHER,
                         ProgramFamily.SCREEN_CHAIN,
                     ),
                 )),

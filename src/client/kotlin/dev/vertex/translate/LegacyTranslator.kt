@@ -61,7 +61,6 @@ object LegacyTranslator {
         val outputs = varyings.entries.mapIndexed { index, (name, type) ->
             "layout(location = ${3 + index}) out $type $name;"
         }.joinToString("\n")
-        val lightmap = if (body.contains("Sampler2")) "uniform sampler2D Sampler2;" else ""
         return """#version 330
 #extension GL_ARB_separate_shader_objects : require
 
@@ -204,15 +203,122 @@ $outputs
         require(!Regex("""gl_FragData\s*\[\s*[1-9]""").containsMatchIn(body)) {
             "dynamic fragment programs must write only render target 0"
         }
+        val lightmap = if (body.contains("Sampler2")) "uniform sampler2D Sampler2;" else ""
         return """#version 330
 #extension GL_ARB_separate_shader_objects : require
 #include <minecraft:fog.glsl>
 #include <minecraft:dynamictransforms.glsl>
 #include <minecraft:oit.glsl>
 uniform sampler2D Sampler0;
+$lightmap
+layout(location = 0) out vec4 fragColor;
+        """ + body.trimStart()
+    }
+
+    /** Sky uses the position-only pipeline; it intentionally has no lightmap ABI. */
+    fun skyVertex(program: LoadedProgram, includeFog: Boolean = true): String {
+        val varyings = varyingDeclarations(program.vertexSource)
+        var body = program.vertexSource
+            .replace(Regex("""^\s*#(?:version|extension)[^\n]*""", RegexOption.MULTILINE), "")
+            .replace(VARYING, "")
+            .replace(Regex("""\bgl_ModelViewProjectionMatrix\b"""), "(ProjMat * ModelViewMat)")
+            .replace(Regex("""\bgl_ModelViewMatrix\b"""), "ModelViewMat")
+            .replace(Regex("""\bgl_ProjectionMatrix\b"""), "ProjMat")
+            .replace(Regex("""\bgl_Vertex\b"""), "vec4(Position, 1.0)")
+            .replace(Regex("""\bgl_Color\b"""), "ColorModulator")
+            .replace(Regex("""\bftransform\s*\(\s*\)"""), "(ProjMat * ModelViewMat * vec4(Position, 1.0))")
+            .let(::modernizeTextureCalls)
+        val main = Regex("""void\s+main\s*\(\s*\)\s*\{""").find(body)
+            ?: error("${program.name}: sky vertex shader has no main()")
+        if (includeFog) body = body.replaceRange(main.range, main.value + """
+    sphericalVertexDistance = fog_spherical_distance(Position);
+    cylindricalVertexDistance = fog_cylindrical_distance(Position);
+""")
+        val outputs = varyings.entries.mapIndexed { index, (name, type) ->
+            "layout(location = ${2 + index}) out $type $name;"
+        }.joinToString("\n")
+        return """#version 330
+#extension GL_ARB_separate_shader_objects : require
+${if (includeFog) "#include <minecraft:fog.glsl>" else ""}
+#include <minecraft:dynamictransforms.glsl>
+#include <minecraft:projection.glsl>
+layout(location = 0) in vec3 Position;
+layout(location = 0) out float sphericalVertexDistance;
+layout(location = 1) out float cylindricalVertexDistance;
+$outputs
+""" + body.trimStart()
+    }
+
+    fun skyFragment(program: LoadedProgram, includeFog: Boolean = true): String {
+        val varyings = varyingDeclarations(program.vertexSource)
+        val fragmentVaryings = varyingDeclarations(program.fragmentSource)
+        require(fragmentVaryings.keys.all(varyings::containsKey)) { "sky fragment references an undeclared varying" }
+        val body = program.fragmentSource
+            .replace(Regex("""^\s*#(?:version|extension)[^\n]*""", RegexOption.MULTILINE), "")
+            .replace(Regex("""uniform\s+sampler2D\s+(texture|gtexture)\s*;"""), "")
+            .replace(VARYING) { match ->
+                val name = match.groupValues[2]
+                "layout(location = ${2 + varyings.keys.indexOf(name)}) in ${match.groupValues[1]} $name;"
+            }
+            .replace(Regex("""\b(texture|gtexture)\b(?!\s*\()"""), "Sampler0")
+            .replace(Regex("""\bgl_FragData\s*\[\s*0\s*]"""), "fragColor")
+            .replace(Regex("""\bgl_FragColor\b"""), "fragColor")
+            .let(::modernizeTextureCalls)
+        require(!Regex("""gl_FragData\s*\[\s*[1-9]""").containsMatchIn(body)) {
+            "sky fragment programs must write only render target 0"
+        }
+        val sampler = if (program.samplers.any { it == "texture" || it == "gtexture" }) "uniform sampler2D Sampler0;" else ""
+        return """#version 330
+#extension GL_ARB_separate_shader_objects : require
+${if (includeFog) "#include <minecraft:fog.glsl>" else ""}
+#include <minecraft:dynamictransforms.glsl>
+$sampler
 layout(location = 0) out vec4 fragColor;
 """ + body.trimStart()
     }
+
+    /** Particle/weather-compatible ABI (Position, UV0, Color, UV2). */
+    fun particleVertex(program: LoadedProgram): String {
+        val varyings = varyingDeclarations(program.vertexSource)
+        var body = program.vertexSource
+            .replace(Regex("""^\s*#(?:version|extension)[^\n]*""", RegexOption.MULTILINE), "")
+            .replace(VARYING, "")
+            .replace(Regex("""\bgl_ModelViewProjectionMatrix\b"""), "(ProjMat * ModelViewMat)")
+            .replace(Regex("""\bgl_ModelViewMatrix\b"""), "ModelViewMat")
+            .replace(Regex("""\bgl_ProjectionMatrix\b"""), "ProjMat")
+            .replace(Regex("""\bgl_Vertex\b"""), "vec4(Position, 1.0)")
+            .replace(Regex("""\bgl_Color\b"""), "Color")
+            .replace(Regex("""\bgl_MultiTexCoord0\b"""), "vec4(UV0, 0.0, 1.0)")
+            .replace(Regex("""\bgl_MultiTexCoord2\b"""), "vec4(UV2, 0.0, 1.0)")
+            .replace(Regex("""\bftransform\s*\(\s*\)"""), "(ProjMat * ModelViewMat * vec4(Position, 1.0))")
+            .let(::modernizeTextureCalls)
+        val main = Regex("""void\s+main\s*\(\s*\)\s*\{""").find(body)
+            ?: error("${program.name}: particle vertex shader has no main()")
+        body = body.replaceRange(main.range, main.value + """
+    sphericalVertexDistance = fog_spherical_distance(Position);
+    cylindricalVertexDistance = fog_cylindrical_distance(Position);
+""")
+        val outputs = varyings.entries.mapIndexed { index, (name, type) ->
+            "layout(location = ${2 + index}) out $type $name;"
+        }.joinToString("\n")
+        return """#version 330
+#extension GL_ARB_separate_shader_objects : require
+#include <minecraft:fog.glsl>
+#include <minecraft:dynamictransforms.glsl>
+#include <minecraft:projection.glsl>
+#include <minecraft:sample_lightmap.glsl>
+layout(location = 0) in vec3 Position;
+layout(location = 1) in vec2 UV0;
+layout(location = 2) in vec4 Color;
+layout(location = 3) in ivec2 UV2;
+uniform sampler2D Sampler2;
+layout(location = 0) out float sphericalVertexDistance;
+layout(location = 1) out float cylindricalVertexDistance;
+$outputs
+""" + body.trimStart()
+    }
+
+    fun particleFragment(program: LoadedProgram): String = dynamicFragment(program)
 
     fun shadowVertex(program: LoadedProgram): String {
         var location = 0

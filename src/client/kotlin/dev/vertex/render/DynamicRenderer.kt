@@ -27,7 +27,10 @@ import java.util.IdentityHashMap
  * fall back to the original pipeline independently of terrain and post effects.
  */
 object DynamicRenderer {
-    private val shaderId = Identifier.fromNamespaceAndPath("vertex", "dynamic_entities")
+    private val entityShaderId = Identifier.fromNamespaceAndPath("vertex", "dynamic_entities")
+    private val skyShaderId = Identifier.fromNamespaceAndPath("vertex", "dynamic_sky")
+    private val starShaderId = Identifier.fromNamespaceAndPath("vertex", "dynamic_stars")
+    private val particleShaderId = Identifier.fromNamespaceAndPath("vertex", "dynamic_particles")
     private val pipelines = IdentityHashMap<RenderPipeline, RenderPipeline>()
     private val compiled = IdentityHashMap<RenderPipeline, CompiledRenderPipeline>()
     private var device: GpuDevice? = null
@@ -50,7 +53,6 @@ object DynamicRenderer {
         RenderPipelines.ITEM_TRANSLUCENT_GLINT,
         RenderPipelines.ITEM_TRANSLUCENT_GLINT_SPECIAL,
     )
-
     @JvmStatic
     @Synchronized
     fun prepare() {
@@ -59,33 +61,32 @@ object DynamicRenderer {
         if (context.tier(ProgramFamily.DYNAMIC_WORLD) != RenderTier.TIER_2) return
         try {
             val root = PackRuntime.root(Minecraft.getInstance().gameDirectory.toPath())
-            val program = PackFrontend.loadDynamic(root, PackRuntime.options())
-                ?: return disable("no gbuffers_entities shader pair")
-            val vsh = LegacyTranslator.dynamicVertex(program)
-            val fsh = LegacyTranslator.dynamicFragment(program)
-            val source = shaderSource(vsh, fsh)
             val gpu = RenderSystem.getDevice()
-            var failures = 0
-            entityPipelines.distinct().forEach { original ->
-                if (!compatible(original)) return@forEach
-                val custom = clone(original)
-                val built = gpu.compilePipeline(custom, source)
-                if (built == null) {
-                    failures++
-                } else {
-                    pipelines[original] = custom
-                    compiled[custom] = built
-                }
-            }
-            if (pipelines.isEmpty()) return disable("dynamic shader pair rejected by RenderPearl")
             device = gpu
             prepared = true
-            context.health.downgrade(ProgramFamily.HAND, RenderTier.TIER_2, "dynamic entity bridge is shared")
-            Vertex.log.info(
-                "[Vertex] dynamic render bridge armed: {} pipelines{}",
-                pipelines.size,
-                if (failures == 0) "" else "; skipped=$failures",
-            )
+            val dynamic = PackFrontend.loadDynamic(root, PackRuntime.options())
+            if (dynamic == null) {
+                disable("no gbuffers_entities shader pair")
+            } else {
+                runCatching {
+                    val failures = compileGroup(
+                        gpu,
+                        entityPipelines,
+                        entityShaderId,
+                        shaderSource(entityShaderId, LegacyTranslator.dynamicVertex(dynamic), LegacyTranslator.dynamicFragment(dynamic)),
+                        ::compatible,
+                    )
+                    if (entityPipelines.any(pipelines::containsKey)) {
+                        context.health.downgrade(ProgramFamily.HAND, RenderTier.TIER_2, "dynamic entity bridge is shared")
+                        Vertex.log.info(
+                            "[Vertex] dynamic render bridge armed: {} pipelines{}",
+                            entityPipelines.count(pipelines::containsKey),
+                            if (failures == 0) "" else "; skipped=$failures",
+                        )
+                    } else disable("dynamic shader pair rejected by RenderPearl")
+                }.onFailure { disable("dynamic pipeline preparation", it) }
+            }
+            compileOptionalSceneFamilies(gpu, root)
         } catch (t: Throwable) {
             disable("dynamic pipeline preparation", t)
         }
@@ -95,7 +96,8 @@ object DynamicRenderer {
     fun pipelineFor(original: RenderPipeline): RenderPipeline = pipelines[original] ?: original
 
     @JvmStatic
-    fun compiledFor(pipeline: RenderPipeline): CompiledRenderPipeline? = compiled[pipeline]
+    fun compiledFor(pipeline: RenderPipeline): CompiledRenderPipeline? =
+        compiled[pipeline] ?: pipelines[pipeline]?.let(compiled::get)
 
     @JvmStatic
     fun isPrepared() = prepared
@@ -121,7 +123,7 @@ object DynamicRenderer {
             format.contains("UV0") && format.contains("Normal")
     }
 
-    private fun clone(original: RenderPipeline): RenderPipeline {
+    private fun clone(original: RenderPipeline, shaderId: Identifier): RenderPipeline {
         val builder = RenderPipeline.builder()
             .withLocation(Identifier.fromNamespaceAndPath("vertex", "pipeline/dynamic_${original.getLocation().path.replace('/', '_')}"))
             .withVertexShader(shaderId)
@@ -147,7 +149,7 @@ object DynamicRenderer {
         return builder.build()
     }
 
-    private fun shaderSource(vsh: String, fsh: String): ShaderSource = ShaderSource { id, type ->
+    private fun shaderSource(shaderId: Identifier, vsh: String, fsh: String): ShaderSource = ShaderSource { id, type ->
         if (id.namespace == "vertex" && id == shaderId) {
             when (type) {
                 ShaderType.VERTEX -> vsh
@@ -156,6 +158,104 @@ object DynamicRenderer {
             }
         } else loadResource(id, type)
     }
+
+    private fun compileGroup(
+        gpu: GpuDevice,
+        originals: List<RenderPipeline>,
+        shaderId: Identifier,
+        source: ShaderSource,
+        compatible: (RenderPipeline) -> Boolean,
+    ): Int {
+        var failures = 0
+        originals.distinct().forEach { original ->
+            if (!compatible(original)) return@forEach
+            val custom = clone(original, shaderId)
+            val built = gpu.compilePipeline(custom, source)
+            if (built == null) failures++ else {
+                pipelines[original] = custom
+                compiled[custom] = built
+            }
+        }
+        return failures
+    }
+
+    private fun compileOptionalSceneFamilies(gpu: GpuDevice, root: java.nio.file.Path) {
+        val options = PackRuntime.options()
+        var skyArmed = false
+        var particleArmed = false
+        var weatherArmed = false
+        PackFrontend.loadSky(root, options)?.let { program ->
+            runCatching {
+                val source = shaderSource(
+                    skyShaderId,
+                    LegacyTranslator.skyVertex(program),
+                    LegacyTranslator.skyFragment(program),
+                )
+                val skipped = compileGroup(
+                    gpu,
+                    listOf(RenderPipelines.SKY, RenderPipelines.FLAT_CLOUDS, RenderPipelines.CLOUDS),
+                    skyShaderId,
+                    source,
+                    ::positionOnly,
+                )
+                skyArmed = pipelines.containsKey(RenderPipelines.SKY)
+                if (skyArmed) Vertex.log.info("[Vertex] sky render bridge armed")
+                if (RenderPipelines.FLAT_CLOUDS in pipelines || RenderPipelines.CLOUDS in pipelines)
+                    Vertex.log.info("[Vertex] cloud render bridge armed")
+                if (skipped > 0) Vertex.log.debug("[Vertex] skipped {} sky pipelines", skipped)
+            }.onFailure { Vertex.log.warn("[Vertex] sky shader rejected; retaining vanilla path", it) }
+            runCatching {
+                val source = shaderSource(
+                    starShaderId,
+                    LegacyTranslator.skyVertex(program, includeFog = false),
+                    LegacyTranslator.skyFragment(program, includeFog = false),
+                )
+                compileGroup(gpu, listOf(RenderPipelines.STARS), starShaderId, source) { positionOnly(it) }
+                skyArmed = skyArmed || pipelines.containsKey(RenderPipelines.STARS)
+            }.onFailure { Vertex.log.debug("[Vertex] stars shader rejected; retaining vanilla path", it) }
+        }
+        PackFrontend.loadParticle(root, options)?.let { program ->
+            runCatching {
+                val source = shaderSource(
+                    particleShaderId,
+                    LegacyTranslator.particleVertex(program),
+                    LegacyTranslator.particleFragment(program),
+                )
+                val skipped = compileGroup(gpu, listOf(RenderPipelines.OPAQUE_PARTICLE, RenderPipelines.TRANSLUCENT_PARTICLE), particleShaderId, source) { particle(it) }
+                particleArmed = RenderPipelines.OPAQUE_PARTICLE in pipelines || RenderPipelines.TRANSLUCENT_PARTICLE in pipelines
+                if (particleArmed) Vertex.log.info("[Vertex] particle render bridge armed")
+                if (skipped > 0) Vertex.log.debug("[Vertex] skipped {} particle pipelines", skipped)
+            }.onFailure { Vertex.log.warn("[Vertex] particle shader rejected; retaining vanilla path", it) }
+        }
+        PackFrontend.loadWeather(root, options)?.let { program ->
+            runCatching {
+                val source = shaderSource(
+                    particleShaderId,
+                    LegacyTranslator.particleVertex(program),
+                    LegacyTranslator.particleFragment(program),
+                )
+                val skipped = compileGroup(gpu, listOf(RenderPipelines.WEATHER), particleShaderId, source) { particle(it) }
+                weatherArmed = RenderPipelines.WEATHER in pipelines
+                if (weatherArmed) Vertex.log.info("[Vertex] weather render bridge armed")
+                if (skipped > 0) Vertex.log.debug("[Vertex] skipped {} weather pipelines", skipped)
+            }.onFailure { Vertex.log.warn("[Vertex] weather shader rejected; retaining vanilla path", it) }
+        }
+        if (!skyArmed || (!particleArmed && !weatherArmed)) {
+            SharedVulkanContext.attach().health.downgrade(
+                ProgramFamily.SKY_WEATHER,
+                RenderTier.TIER_1,
+                "sky/weather shader bridge unavailable",
+            )
+        }
+    }
+
+    private fun positionOnly(pipeline: RenderPipeline): Boolean =
+        pipeline.getVertexFormatBinding(0)?.let { it.contains("Position") && it.getElements().size == 1 } == true
+
+    private fun particle(pipeline: RenderPipeline): Boolean =
+        pipeline.getVertexFormatBinding(0)?.let {
+            it.contains("Position") && it.contains("UV0") && it.contains("Color") && it.contains("UV2")
+        } == true
 
     private fun loadResource(id: Identifier, type: ShaderType?): String? {
         val location = type?.idConverter()?.idToFile(id) ?: id
