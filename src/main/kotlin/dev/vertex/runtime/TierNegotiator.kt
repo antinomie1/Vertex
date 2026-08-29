@@ -43,6 +43,7 @@ object TierNegotiator {
     fun negotiate(
         capabilities: DeviceCapabilities,
         compatibility: CompatibilityProbe = CompatibilityProbe(),
+        implementedTier2: Set<ProgramFamily> = ProgramFamily.entries.toSet(),
     ): Map<ProgramFamily, TierDecision> {
         if (!capabilities.supportsTier2) {
             val reason = missingCapabilities(capabilities).joinToString(", ")
@@ -55,7 +56,7 @@ object TierNegotiator {
             TierDecision(RenderTier.TIER_2, reason)
         fun game(reason: String) = TierDecision(RenderTier.TIER_1, reason)
 
-        return mapOf(
+        val decisions = mapOf(
             ProgramFamily.TERRAIN_OPAQUE to if (compatibility.sodiumTerrainConflict)
                 game("terrain renderer conflict") else full(),
             ProgramFamily.TERRAIN_WATER to if (compatibility.translucentSortingConflict)
@@ -68,6 +69,10 @@ object TierNegotiator {
                 game("external world renderer must retain its own draw path") else full(),
             ProgramFamily.SCREEN_CHAIN to full(),
         )
+        return decisions.mapValues { (family, decision) ->
+            if (family !in implementedTier2 && decision.tier == RenderTier.TIER_2)
+                game("Tier 2 route is not implemented yet") else decision
+        }
     }
 
     private fun missingCapabilities(c: DeviceCapabilities): List<String> = buildList {

@@ -61,7 +61,11 @@ data class SharedVulkanContext(
                 device = vulkan?.vkDevice(),
                 gpuName = info.name(),
                 graphicsFamily = vulkan?.graphicsQueue()?.queueFamilyIndex() ?: -1,
-                decisions = TierNegotiator.negotiate(caps, compatibility),
+                decisions = TierNegotiator.negotiate(
+                    caps,
+                    compatibility,
+                    implementedTier2 = setOf(ProgramFamily.TERRAIN_OPAQUE, ProgramFamily.SCREEN_CHAIN),
+                ),
             )
         }
     }

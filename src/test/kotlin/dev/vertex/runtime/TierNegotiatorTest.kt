@@ -25,4 +25,14 @@ class TierNegotiatorTest {
         assertEquals(RenderTier.TIER_2, decisions.getValue(ProgramFamily.HAND).tier)
         assertEquals(RenderTier.TIER_2, decisions.getValue(ProgramFamily.SCREEN_CHAIN).tier)
     }
+
+    @Test
+    fun `capable but unimplemented families remain on the game path`() {
+        val decisions = TierNegotiator.negotiate(
+            full,
+            implementedTier2 = setOf(ProgramFamily.TERRAIN_OPAQUE, ProgramFamily.SCREEN_CHAIN),
+        )
+        assertEquals(RenderTier.TIER_2, decisions.getValue(ProgramFamily.TERRAIN_OPAQUE).tier)
+        assertEquals(RenderTier.TIER_1, decisions.getValue(ProgramFamily.HAND).tier)
+    }
 }
