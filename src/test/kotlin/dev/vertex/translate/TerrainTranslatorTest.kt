@@ -52,4 +52,15 @@ class TerrainTranslatorTest {
         assertContains(fragment, "texture(Sampler0, vec2(0.5))")
         assertFalse(fragment.contains("Sampler0(Sampler0"))
     }
+
+    @Test fun `maps shadow model projection builtin`() {
+        val program = LoadedProgram(
+            "shadow-mvp",
+            "#version 120\nvoid main() { gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex; }",
+            "#version 120\nvoid main() { gl_FragColor = vec4(1.0); }",
+            null, emptyList(), listOf(0), emptySet(),
+        )
+        val vertex = LegacyTranslator.shadowVertex(program)
+        assertContains(vertex, "vertexShadowMvp * vec4(pos, 1.0)")
+    }
 }

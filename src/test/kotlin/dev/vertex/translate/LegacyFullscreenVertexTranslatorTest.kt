@@ -30,4 +30,13 @@ class LegacyFullscreenVertexTranslatorTest {
         )
         assertContains(translated, "layout(location = 0) out vec2 uv;")
     }
+
+    @Test
+    fun `maps legacy fullscreen builtins and texture calls`() {
+        val translated = LegacyFullscreenVertexTranslator.translate(
+            "uniform sampler2D tex; void main() { gl_Position = gl_Vertex; gl_FragCoord = texture2D(tex, gl_MultiTexCoord1.xy); }",
+        )
+        assertContains(translated, "vec4(vertexUv * 2.0 - 1.0, 0.0, 1.0)")
+        assertContains(translated, "texture(tex, vec4(0.0).xy)")
+    }
 }

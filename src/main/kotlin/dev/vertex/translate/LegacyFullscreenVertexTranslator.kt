@@ -14,9 +14,16 @@ object LegacyFullscreenVertexTranslator {
             "layout(location = ${location++}) out ${it.groupValues[1]} ${it.groupValues[2]};"
         }
         body = body
+            .let(::modernizeTextureCalls)
             .replace(Regex("""\bftransform\s*\(\s*\)"""), "vec4(vertexUv * 2.0 - 1.0, 0.0, 1.0)")
+            .replace(Regex("""\bgl_Vertex\b"""), "vec4(vertexUv * 2.0 - 1.0, 0.0, 1.0)")
             .replace(Regex("""\bgl_MultiTexCoord0\b"""), "vec4(vertexUv, 0.0, 1.0)")
-            .replace(Regex("""\bgl_TextureMatrix\s*\[\s*0\s*]"""), "mat4(1.0)")
+            .replace(Regex("""\bgl_MultiTexCoord[12]\b"""), "vec4(0.0)")
+            .replace(Regex("""\bgl_TextureMatrix\s*\[\s*[01]\s*]"""), "mat4(1.0)")
+            .replace(Regex("""\bgl_ModelViewProjectionMatrix\b|\bgl_ModelViewMatrix\b|\bgl_ProjectionMatrix\b"""), "mat4(1.0)")
+            .replace(Regex("""\bgl_NormalMatrix\b"""), "mat3(1.0)")
+            .replace(Regex("""\bgl_Color\b"""), "vec4(1.0)")
+            .replace(Regex("""\bgl_Normal\b"""), "vec3(0.0, 0.0, 1.0)")
         val main = Regex("""void\s+main\s*\(\s*\)\s*\{""").find(body)
             ?: throw IllegalArgumentException("fullscreen vertex shader has no main()")
         body = body.replaceRange(
@@ -25,5 +32,11 @@ object LegacyFullscreenVertexTranslator {
         )
         require("vertexUv" in body) { "fullscreen vertex shader has no main()" }
         return "#version 330\n#extension GL_ARB_separate_shader_objects : require\n" + body.trimStart()
+    }
+
+    private val TEXTURE_CALL = Regex("""\b(texture2DProj|texture2D|texture3D|textureCube)\s*\(""")
+
+    private fun modernizeTextureCalls(source: String) = source.replace(TEXTURE_CALL) {
+        (if (it.groupValues[1] == "texture2DProj") "textureProj" else "texture") + "("
     }
 }
