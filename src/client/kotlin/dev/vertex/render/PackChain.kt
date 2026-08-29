@@ -155,6 +155,7 @@ object PackChain {
                 rp.setPipeline(blit!!)
                 rp.setUniform("InSampler", finalColor, sampler)
             }
+            ReplayCapture.capture(device, main.colorTexture!!, w, h)
             timingPool?.let { pool ->
                 encoder.writeTimestamp(pool, uniformSlot * 2 + 1)
                 timingArmed[uniformSlot] = true

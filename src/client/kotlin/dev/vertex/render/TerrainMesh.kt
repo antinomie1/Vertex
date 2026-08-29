@@ -80,6 +80,7 @@ object TerrainMesh {
                     ?: error("RenderPearl rejected ${pipeline.location}")
             }
             prepared = Prepared(device, solid, cutout, compiled)
+            TerrainCommandCache.invalidate()
             Vertex.log.info(
                 "[Vertex] terrain mesh surgery armed: stride={} layers=solid,cutout (gbuffers_terrain translated)",
                 customFormat.getVertexSize()

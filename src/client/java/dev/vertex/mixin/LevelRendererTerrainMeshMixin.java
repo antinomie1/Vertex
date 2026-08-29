@@ -7,6 +7,7 @@ import com.mojang.renderpearl.api.pipeline.RenderPipeline;
 import dev.vertex.render.PackChain;
 import dev.vertex.render.TerrainMesh;
 import dev.vertex.render.ShadowRenderer;
+import dev.vertex.render.TerrainCommandCache;
 import java.util.Optional;
 import java.util.OptionalDouble;
 import net.minecraft.client.Minecraft;
@@ -46,6 +47,21 @@ public abstract class LevelRendererTerrainMeshMixin {
     ) {
         PackChain.beginFrame();
         ShadowRenderer.render(sections);
+    }
+
+    @Redirect(
+        method = "executeSolid",
+        at = @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/chunk/ChunkSectionsToRender;renderGroup(Lnet/minecraft/client/renderer/chunk/ChunkSectionLayerGroup;Lcom/mojang/renderpearl/api/commands/RenderPass;Lcom/mojang/renderpearl/api/textures/GpuSampler;Lcom/mojang/renderpearl/api/textures/GpuTextureView;Z)V")
+    )
+    private void vertex$renderCachedTerrain(
+        ChunkSectionsToRender sections,
+        net.minecraft.client.renderer.chunk.ChunkSectionLayerGroup group,
+        RenderPass pass,
+        com.mojang.renderpearl.api.textures.GpuSampler sampler,
+        com.mojang.renderpearl.api.textures.GpuTextureView atlas,
+        boolean wireframe
+    ) {
+        TerrainCommandCache.render(sections, group, pass, sampler, atlas, wireframe);
     }
 
     /** Splits the main pass only when depthtex1 needs the pre-translucent snapshot. */
