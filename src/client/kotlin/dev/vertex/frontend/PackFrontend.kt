@@ -18,9 +18,8 @@ data class LoadedProgram(
 object PackFrontend {
     fun loadComposite(packRoot: Path, options: Map<String, String> = emptyMap()): LoadedProgram {
         val sh = packRoot.resolve("shaders")
-        val preprocessor = ShaderPreprocessor(listOf(sh), options)
-        val vsh = preprocessor.process(sh.resolve("composite.vsh"))
-        val fsh = preprocessor.process(sh.resolve("composite.fsh"))
+        val vsh = ShaderPreprocessor(listOf(sh), options).process(sh.resolve("composite.vsh"))
+        val fsh = ShaderPreprocessor(listOf(sh), options).process(sh.resolve("composite.fsh"))
 
         val varying = Regex("""varying\s+\w+\s+(\w+)\s*;""").findAll(vsh)
             .map { it.groupValues[1] }.singleOrNull()
@@ -36,9 +35,8 @@ object PackFrontend {
         val sh = packRoot.resolve("shaders")
         val vshFile = sh.resolve("gbuffers_terrain.vsh")
         val fshFile = sh.resolve("gbuffers_terrain.fsh")
-        val preprocessor = ShaderPreprocessor(listOf(sh), options)
-        val vsh = if (Files.isRegularFile(vshFile)) preprocessor.process(vshFile) else SamplePack.TERRAIN_VSH
-        val fsh = if (Files.isRegularFile(fshFile)) preprocessor.process(fshFile) else SamplePack.TERRAIN_FSH
+        val vsh = if (Files.isRegularFile(vshFile)) ShaderPreprocessor(listOf(sh), options).process(vshFile) else SamplePack.TERRAIN_VSH
+        val fsh = if (Files.isRegularFile(fshFile)) ShaderPreprocessor(listOf(sh), options).process(fshFile) else SamplePack.TERRAIN_FSH
         val samplers = Regex("""uniform\s+sampler2D\s+(\w+)\s*;""").findAll(fsh)
             .map { it.groupValues[1] }.toList()
         return LoadedProgram(vsh, fsh, null, samplers)

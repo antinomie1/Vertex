@@ -12,6 +12,7 @@ import com.mojang.renderpearl.api.pipeline.ShaderType
 import com.mojang.renderpearl.api.vertex.VertexFormat
 import dev.vertex.Vertex
 import dev.vertex.core.SharedVulkanContext
+import dev.vertex.frontend.PackRuntime
 import dev.vertex.runtime.ProgramFamily
 import dev.vertex.runtime.RenderTier
 import net.minecraft.client.Minecraft
@@ -63,10 +64,11 @@ object TerrainMesh {
             Vertex.log.debug("[Vertex] terrain mesh deferred: GPU device unavailable", t)
             return
         }
+        if (prepared?.device === device) return
         try {
             val runDir = Minecraft.getInstance().gameDirectory.toPath()
-            val packRoot = dev.vertex.frontend.SamplePack.ensure(runDir.resolve("shaderpacks"))
-            val terrainProg = dev.vertex.frontend.PackFrontend.loadTerrain(packRoot)
+            val packRoot = PackRuntime.root(runDir)
+            val terrainProg = dev.vertex.frontend.PackFrontend.loadTerrain(packRoot, PackRuntime.options())
             val translatedVsh = dev.vertex.translate.LegacyTranslator.terrainVertex(terrainProg)
             val translatedFsh = dev.vertex.translate.LegacyTranslator.terrainFragment(terrainProg)
             val source = shaderSource(translatedVsh, translatedFsh)

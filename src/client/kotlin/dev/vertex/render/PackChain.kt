@@ -15,7 +15,7 @@ import com.mojang.renderpearl.api.textures.FilterMode
 import com.mojang.renderpearl.api.textures.GpuTexture
 import com.mojang.renderpearl.api.textures.GpuTextureView
 import dev.vertex.frontend.PackFrontend
-import dev.vertex.frontend.SamplePack
+import dev.vertex.frontend.PackRuntime
 import dev.vertex.translate.LegacyTranslator
 import net.minecraft.client.Minecraft
 import net.minecraft.client.renderer.BindGroupLayouts
@@ -43,6 +43,20 @@ object PackChain {
     private var builtForH = 0
     private var failed = false
     private var dbgFrame = 0L
+
+    fun prepare() {
+        if (failed) return
+        try {
+            val device = RenderSystem.getDevice()
+            val main = Minecraft.getInstance().gameRenderer.mainRenderTarget()
+            ensureSize(device, main.width, main.height)
+            ensurePipelines(device)
+            dev.vertex.Vertex.log.info("[Vertex] pack pipelines prewarmed ({}x{})", w, h)
+        } catch (t: Throwable) {
+            failed = true
+            dev.vertex.Vertex.log.error("[Vertex] pack prewarm failed; Tier 0 chain disabled", t)
+        }
+    }
 
     fun draw() {
         if (failed) return
@@ -153,33 +167,32 @@ object PackChain {
     private fun ensurePipelines(device: com.mojang.renderpearl.api.device.GpuDevice) {
         if (composite != null && blit != null && normals != null && builtForW == w && builtForH == h) return
         val runDir = Minecraft.getInstance().gameDirectory.toPath()
-        val packRoot = SamplePack.ensure(runDir.resolve("shaderpacks"))
-        val prog = PackFrontend.loadComposite(packRoot)
+        val packRoot = PackRuntime.root(runDir)
+        val prog = PackFrontend.loadComposite(packRoot, PackRuntime.options())
         dev.vertex.Vertex.log.info("[Vertex] pack loaded ({}/{}): samplers={} varying='{}'", w, h, prog.samplers, prog.varyingName)
 
         val source = ShaderSource { id, type ->
-            dev.vertex.Vertex.log.info("[Vertex] src-query: {} ({}) type={}", id, id.namespace, type)
-            val out = when (id.path) {
+            when (id.path) {
                 "pack/post.v" -> POST_VSH
                 "pack/normals.f" -> NORMAL_FSH.replace("__TEXEL__", "vec2(${1.0 / w}, ${1.0 / h})")
                 "pack/composite.f" -> LegacyTranslator.fragment(prog)
                 "pack/blit.f" -> BLIT_FSH
                 else -> null
             }
-            dev.vertex.Vertex.log.info("[Vertex] src-answer: {} -> {}", id, if (out != null) "HIT" else "MISS")
-            out
         }
 
-        normals = compile(device, source, id("pack/post.v"), id("pack/normals.f"),
-            BindGroupLayout.builder().withUniform("depthtex0", UniformType.COMBINED_IMAGE_SAMPLER).build())
-        composite = compile(device, source, id("pack/post.v"), id("pack/composite.f"),
+        if (normals == null || builtForW != w || builtForH != h) {
+            normals?.close()
+            normals = compile(device, source, id("pack/post.v"), id("pack/normals.f"),
+                BindGroupLayout.builder().withUniform("depthtex0", UniformType.COMBINED_IMAGE_SAMPLER).build())
+        }
+        if (composite == null) composite = compile(device, source, id("pack/post.v"), id("pack/composite.f"),
             BindGroupLayout.builder()
                 .withUniform("colortex0", UniformType.COMBINED_IMAGE_SAMPLER)
                 .withUniform("depthtex0", UniformType.COMBINED_IMAGE_SAMPLER)
                 .withUniform("normalsTex", UniformType.COMBINED_IMAGE_SAMPLER)
                 .build())
-        blit = compile(device, source, id("pack/post.v"), id("pack/blit.f"),
-            BindGroupLayouts.IN_SAMPLER)
+        if (blit == null) blit = compile(device, source, id("pack/post.v"), id("pack/blit.f"), BindGroupLayouts.IN_SAMPLER)
 
         builtForW = w; builtForH = h
     }
