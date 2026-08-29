@@ -114,6 +114,8 @@ object PackChain {
     private val projectionMatrix = Matrix4f()
     private val matrixScratch = FloatArray(16)
     private val normalScratch = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
+    private val dateScratch = IntArray(8)
+    private var dateSecond = Long.MIN_VALUE
     private var timingPool: GpuQueryPool? = null
     private var timestampPeriod = 1f
     private val timingArmed = BooleanArray(2)
@@ -146,7 +148,7 @@ object PackChain {
         uniformBuffer = null; timingPool = null; frameReady = false; failed = false
         scaleResolved = false; builtForW = 0; builtForH = 0; w = 0; h = 0
         targetBytes = 0; staticBytes = 0; needsNormals = false; neededDepths = emptySet(); activeColors = emptySet()
-        timingArmed.fill(false); timingsSinceReport = 0; perfBaselineWritten = false
+        timingArmed.fill(false); timingsSinceReport = 0; perfBaselineWritten = false; dateSecond = Long.MIN_VALUE
     }
 
     fun prepare() {
@@ -657,10 +659,17 @@ object PackChain {
         val fog = probe.getValue(EnvironmentAttributes.FOG_COLOR, partialTick)
         uniformHeap.putVec3(uniformSlot, "skyColor", ARGB.redFloat(sky), ARGB.greenFloat(sky), ARGB.blueFloat(sky))
         uniformHeap.putVec3(uniformSlot, "fogColor", ARGB.redFloat(fog), ARGB.greenFloat(fog), ARGB.blueFloat(fog))
-        val date = LocalDateTime.now()
-        uniformHeap.putIVec3(uniformSlot, "currentDate", date.year, date.monthValue, date.dayOfMonth)
-        uniformHeap.putIVec3(uniformSlot, "currentTime", date.hour, date.minute, date.second)
-        uniformHeap.putIVec2(uniformSlot, "currentYearTime", date.dayOfYear, if (date.toLocalDate().isLeapYear) 366 else 365)
+        val wallSecond = System.currentTimeMillis() / 1_000L
+        if (wallSecond != dateSecond) {
+            val date = LocalDateTime.now()
+            dateScratch[0] = date.year; dateScratch[1] = date.monthValue; dateScratch[2] = date.dayOfMonth
+            dateScratch[3] = date.hour; dateScratch[4] = date.minute; dateScratch[5] = date.second
+            dateScratch[6] = date.dayOfYear; dateScratch[7] = if (date.toLocalDate().isLeapYear) 366 else 365
+            dateSecond = wallSecond
+        }
+        uniformHeap.putIVec3(uniformSlot, "currentDate", dateScratch[0], dateScratch[1], dateScratch[2])
+        uniformHeap.putIVec3(uniformSlot, "currentTime", dateScratch[3], dateScratch[4], dateScratch[5])
+        uniformHeap.putIVec2(uniformSlot, "currentYearTime", dateScratch[6], dateScratch[7])
         uniformHeap.putVec3(uniformSlot, "sunPosition", cos(angle) * 100f, sin(angle) * 100f, 0f)
         uniformHeap.putVec3(uniformSlot, "shadowLightPosition", cos(angle) * 100f, sin(angle) * 100f, 35f)
         uniformHeap.putVec3(uniformSlot, "moonPosition", -cos(angle) * 100f, -sin(angle) * 100f, 0f)

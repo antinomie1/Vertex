@@ -16,7 +16,14 @@ class RenderTargetBanks(private val size: Int = 16) {
 
     /** Outputs write the opposite bank; flip=false exposes the existing bank, otherwise the new bank. */
     fun commit(outputs: Iterable<Int>, flips: Map<Int, Boolean>) {
-        outputs.toSet().forEach { id -> if (flips[id] != false) values[checked(id)] = values[id] xor 1 }
+        var seen = 0
+        for (id in outputs) {
+            val index = checked(id)
+            val bit = 1 shl index
+            if (seen and bit != 0) continue
+            seen = seen or bit
+            if (flips[id] != false) values[index] = values[index] xor 1
+        }
     }
 
     private fun checked(id: Int): Int {

@@ -42,7 +42,8 @@ object TerrainMesh {
     @Volatile private var requirements = TerrainRequirements(false, false, false, false)
 
     private val currentEntityPayload = ThreadLocal<Int>()
-    private val currentMidUv = ThreadLocal<FloatArray>()
+    private val currentMidUv = ThreadLocal.withInitial { FloatArray(2) }
+    private val midUvActive = ThreadLocal.withInitial { false }
     private val shaderId = Identifier.fromNamespaceAndPath("vertex", "terrain_mesh")
     private val opaqueLayers = setOf(ChunkSectionLayer.SOLID, ChunkSectionLayer.CUTOUT)
 
@@ -165,15 +166,17 @@ object TerrainMesh {
             for (vertex in 0..3) quad.packedUV(vertex).let { packed ->
                 u += UVPair.unpackU(packed); v += UVPair.unpackV(packed)
             }
-            currentMidUv.set(floatArrayOf(u * .25f, v * .25f))
+            currentMidUv.get()[0] = u * .25f
+            currentMidUv.get()[1] = v * .25f
+            midUvActive.set(true)
         }
     }
 
     @JvmStatic fun fillExtraVertex(consumer: com.mojang.blaze3d.vertex.VertexConsumer) {
-        currentMidUv.get()?.let { consumer.setUv3(it[0], it[1]) }
+        if (midUvActive.get()) currentMidUv.get().let { consumer.setUv3(it[0], it[1]) }
     }
 
-    @JvmStatic fun clearQuadPayload() = currentMidUv.remove()
+    @JvmStatic fun clearQuadPayload() = midUvActive.set(false)
 
 
     @JvmStatic
