@@ -264,7 +264,7 @@ layout(location = 0) out vec4 fragColor;
     }
 
     /** Sky uses the position-only pipeline; it intentionally has no lightmap ABI. */
-    fun skyVertex(program: LoadedProgram, includeFog: Boolean = true): String {
+    fun skyVertex(program: LoadedProgram, includeFog: Boolean = true, forceTransparent: Boolean = false): String {
         val varyings = varyingDeclarations(program.vertexSource)
         var body = program.vertexSource
             .replace(Regex("""^\s*#(?:version|extension)[^\n]*""", RegexOption.MULTILINE), "")
@@ -277,6 +277,7 @@ layout(location = 0) out vec4 fragColor;
             .replace(Regex("""\bftransform\s*\(\s*\)"""), "(ProjMat * ModelViewMat * vec4(Position, 1.0))")
             .let(::modernizeTextureCalls)
             .let(LegacyUniformTranslator::translate)
+            .let { if (forceTransparent) it.replace("alpha = 1.0;", "alpha = 0.0;") else it }
         val main = Regex("""void\s+main\s*\(\s*\)\s*\{""").find(body)
             ?: error("${program.name}: sky vertex shader has no main()")
         if (includeFog) body = body.replaceRange(main.range, main.value + """

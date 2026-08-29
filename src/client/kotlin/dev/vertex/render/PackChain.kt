@@ -315,6 +315,11 @@ object PackChain {
         bindUniforms(pass)
     }
 
+    @JvmStatic
+    fun bindTerrainAtlas(pass: RenderPass, atlas: GpuTextureView) {
+        pass.setUniform("Sampler0", atlas, RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST))
+    }
+
     private fun bindShadowSamplers(pass: RenderPass, sampler: GpuSampler) {
         fun bind(name: String, view: GpuTextureView?) {
             if (view != null) runCatching { pass.setUniform(name, view, sampler) }
@@ -669,8 +674,16 @@ object PackChain {
         uniformHeap.putFloat(uniformSlot, "frameTime", frameTime)
         uniformHeap.putFloat(uniformSlot, "frameTimeCounter", frameTimeCounter)
         uniformHeap.putFloat(uniformSlot, "eyeAltitude", camera.y.toFloat())
-        uniformHeap.putFloat(uniformSlot, "sunAngle", angle / (Math.PI * 2.0).toFloat())
-        uniformHeap.putFloat(uniformSlot, "shadowAngle", angle / (Math.PI * 2.0).toFloat())
+        val timeAngle = angle / (Math.PI * 2.0).toFloat()
+        uniformHeap.putFloat(uniformSlot, "sunAngle", timeAngle)
+        uniformHeap.putFloat(uniformSlot, "shadowAngle", timeAngle)
+        uniformHeap.putFloat(uniformSlot, "timeAngle", day / 24000f)
+        uniformHeap.putFloat(uniformSlot, "timeBrightness", kotlin.math.sin(day / 24000f * (Math.PI * 2.0).toFloat()).coerceAtLeast(0f))
+        val shadowFadeOut1 = ((day - 12330) / 230f).coerceIn(0f, 1f)
+        val shadowFadeIn1 = ((day - 13010) / 220f).coerceIn(0f, 1f)
+        val shadowFadeOut2 = ((day - 22770) / 220f).coerceIn(0f, 1f)
+        val shadowFadeIn2 = ((day - 23440) / 230f).coerceIn(0f, 1f)
+        uniformHeap.putFloat(uniformSlot, "shadowFade", (1f - (shadowFadeOut1 - shadowFadeIn1 + shadowFadeOut2 - shadowFadeIn2)).coerceIn(0f, 1f))
         uniformHeap.putFloat(uniformSlot, "screenBrightness", mc.options.gamma().get().toFloat())
         val rain = mc.level?.getRainLevel(partialTick) ?: 0f
         uniformHeap.putFloat(uniformSlot, "rainStrength", rain)
@@ -703,6 +716,7 @@ object PackChain {
         val blockX = kotlin.math.floor(camera.x).toInt(); val blockY = kotlin.math.floor(camera.y).toInt(); val blockZ = kotlin.math.floor(camera.z).toInt()
         uniformHeap.putIVec3(uniformSlot, "cameraPositionInt", blockX, blockY, blockZ)
         uniformHeap.putVec3(uniformSlot, "cameraPositionFract", camera.x.toFloat() - blockX, camera.y.toFloat() - blockY, camera.z.toFloat() - blockZ)
+        uniformHeap.putVec3(uniformSlot, "relativeEyePosition", camera.x.toFloat() - blockX, camera.y.toFloat() - blockY, camera.z.toFloat() - blockZ)
         val oldX = kotlin.math.floor(previousX).toInt(); val oldY = kotlin.math.floor(previousY).toInt(); val oldZ = kotlin.math.floor(previousZ).toInt()
         uniformHeap.putIVec3(uniformSlot, "previousCameraPositionInt", oldX, oldY, oldZ)
         uniformHeap.putVec3(uniformSlot, "previousCameraPositionFract", previousX - oldX, previousY - oldY, previousZ - oldZ)

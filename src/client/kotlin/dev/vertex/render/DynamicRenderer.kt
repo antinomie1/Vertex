@@ -235,7 +235,10 @@ object DynamicRenderer {
                 )
                 val skipped = compileGroup(
                     gpu,
-                    listOf(RenderPipelines.SKY, RenderPipelines.FLAT_CLOUDS, RenderPipelines.CLOUDS),
+                    // Minecraft clouds are procedural (CloudInfo/CloudFaces), not
+                    // position-only geometry. Keep their vanilla pipeline; the pack
+                    // sky shader has no cloud ABI and would otherwise remove them.
+                    listOf(RenderPipelines.SKY),
                     skyShaderId,
                     source,
                     ::positionOnly,
@@ -243,14 +246,12 @@ object DynamicRenderer {
                 )
                 skyArmed = pipelines.containsKey(RenderPipelines.SKY)
                 if (skyArmed) Vertex.log.info("[Vertex] sky render bridge armed")
-                if (RenderPipelines.FLAT_CLOUDS in pipelines || RenderPipelines.CLOUDS in pipelines)
-                    Vertex.log.info("[Vertex] cloud render bridge armed")
                 if (skipped > 0) Vertex.log.debug("[Vertex] skipped {} sky pipelines", skipped)
             }.onFailure { Vertex.log.warn("[Vertex] sky shader rejected; retaining vanilla path", it) }
             runCatching {
                 val source = shaderSource(
                     starShaderId,
-                    LegacyTranslator.skyVertex(program, includeFog = false),
+                    LegacyTranslator.skyVertex(program, includeFog = false, forceTransparent = true),
                     LegacyTranslator.skyFragment(program, includeFog = false),
                 )
                 compileGroup(gpu, listOf(RenderPipelines.STARS), starShaderId, source, { positionOnly(it) }, program.samplers.toSet())
