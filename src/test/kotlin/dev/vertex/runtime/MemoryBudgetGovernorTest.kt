@@ -28,4 +28,14 @@ class MemoryBudgetGovernorTest {
             )
         }
     }
+
+    @Test
+    fun `repeatedly reduces pathological shadow maps before rejecting the pack`() {
+        val plan = MemoryBudgetGovernor.plan(
+            listOf(ImageAllocation("shadowtex0", 8192, 8192, 4, ImageClass.SHADOW)),
+            16L * 1024 * 1024, 854, 480,
+        )
+        assertEquals(2048, plan.allocations.single().width)
+        assertEquals(2, plan.degradations.size)
+    }
 }

@@ -12,6 +12,7 @@ object LegacyFragmentTranslator {
             .replace(Regex("""^\s*#version[^\n]*""", RegexOption.MULTILINE), "")
             .replace(Regex("""^\s*#extension[^\n]*""", RegexOption.MULTILINE), "")
             .replace(BUFFER_DIRECTIVE, "")
+            .replace(Regex("""\buniform\s+sampler2DShadow\b"""), "uniform sampler2D")
         body = LegacyUniformTranslator.translate(body)
         var location = 0
         body = varying.replace(body) { match ->
@@ -43,7 +44,7 @@ object LegacyFragmentTranslator {
         return buildString {
             appendLine("#version 330")
             appendLine("#extension GL_ARB_separate_shader_objects : require")
-            if ("shadow2D" in body) appendLine("#define shadow2D(s, c) vec4(texture((s), (c)))")
+            if ("shadow2D" in body) appendLine("#define shadow2D(s, c) vec4(float((c).z <= texture((s), (c).xy).r))")
             legacyOutputs.sorted().forEach { location ->
                 appendLine("layout(location = $location) out ${outputType(outputTypes.getOrElse(location) { ColorNumericType.FLOAT })} vertexFragColor$location;")
             }

@@ -327,6 +327,7 @@ object PackChain {
             (!needsNormals || normals != null && builtForW == w && builtForH == h)) return
         val runDir = Minecraft.getInstance().gameDirectory.toPath()
         val packRoot = PackRuntime.root(runDir)
+        ShadowRenderer.discover()
         val programs = PackFrontend.loadScreenChain(packRoot, PackRuntime.options())
         val semantics = PackSemanticsParser.load(packRoot, PackRuntime.options())
         needsNormals = programs.any { "normalsTex" in it.samplers }
@@ -336,6 +337,7 @@ object PackChain {
         activeColors = (programs.flatMap { it.outputs } + programs.flatMap { it.samplers }.mapNotNull(::colorId) +
             semantics.flips.values.flatMap(Map<Int, Boolean>::keys)).toSet()
         enforceMemoryBudget(semantics.colors.map { it.format })
+        ShadowRenderer.prepare()
         colorFormats = semantics.colors.map { gpuFormat(it.format) }
         if (customColor0()) {
             tempView?.close(); tempTex?.close(); tempView = null; tempTex = null
@@ -367,8 +369,10 @@ object PackChain {
             val staticSamplers = samplers.mapNotNull { name ->
                 staticSampler(device, packRoot.resolve("shaders"), semantics, program.name, name)?.let { name to it }
             }.toMap()
-            require(samplers.all { colorId(it) != null || DEPTH.matches(it) || it == "normalsTex" || it in staticSamplers }) {
-                "${program.name}: unsupported samplers ${samplers.filterNot { colorId(it) != null || DEPTH.matches(it) || it == "normalsTex" || it in staticSamplers }}"
+            require(samplers.all { colorId(it) != null || DEPTH.matches(it) || it == "normalsTex" ||
+                ShadowRenderer.view(it) != null || it in staticSamplers }) {
+                "${program.name}: unsupported samplers ${samplers.filterNot { colorId(it) != null || DEPTH.matches(it) ||
+                    it == "normalsTex" || ShadowRenderer.view(it) != null || it in staticSamplers }}"
             }
             val layout = BindGroupLayout.builder().also { builder ->
                 samplers.forEach { builder.withUniform(it, UniformType.COMBINED_IMAGE_SAMPLER) }
@@ -414,6 +418,7 @@ object PackChain {
         "depthtex1" -> depthViews[1]!!
         "depthtex2" -> depthViews[2]!!
         "normalsTex" -> normalView!!
+        "shadowtex0", "shadowtex1", "shadowcolor0", "shadowcolor1" -> ShadowRenderer.view(name)!!
         else -> colorId(name)?.let { colorView(it, banks[it], scene) } ?: error("unsupported sampler '$name'")
     }
 
@@ -531,6 +536,7 @@ object PackChain {
         uniformHeap.putIVec3(uniformSlot, "currentTime", date.hour, date.minute, date.second)
         uniformHeap.putIVec2(uniformSlot, "currentYearTime", date.dayOfYear, if (date.toLocalDate().isLeapYear) 366 else 365)
         uniformHeap.putVec3(uniformSlot, "sunPosition", cos(angle) * 100f, sin(angle) * 100f, 0f)
+        uniformHeap.putVec3(uniformSlot, "shadowLightPosition", cos(angle) * 100f, sin(angle) * 100f, 35f)
         uniformHeap.putVec3(uniformSlot, "moonPosition", -cos(angle) * 100f, -sin(angle) * 100f, 0f)
         uniformHeap.putVec3(uniformSlot, "upPosition", 0f, 100f, 0f)
         uniformHeap.putIVec2(uniformSlot, "eyeBrightness", 240, 240)
@@ -545,7 +551,7 @@ object PackChain {
         putMatrix("gbufferProjectionInverse", inverseMatrix.set(projectionMatrix).invert())
         putMatrix("gbufferPreviousProjection", previousProjection)
         previousProjection.set(projectionMatrix)
-        SHADOW_MATRICES.forEach { putMatrix(it, IDENTITY) }
+        SHADOW_MATRICES.forEach { putMatrix(it, ShadowRenderer.uniformMatrix(it) ?: IDENTITY) }
         NORMAL_MATRICES.forEach { uniformHeap.putMat3(uniformSlot, it, normalScratch) }
         encoder.writeToBuffer(
             uniformBuffer!!.slice(uniformHeap.segmentOffset(uniformSlot).toLong(), uniformHeap.layout.segmentBytes.toLong()),
@@ -641,12 +647,15 @@ object PackChain {
             List(copies) { bank -> ImageAllocation("colortex$id-$bank", w, h, formats[id].bytesPerPixel,
                 if (id == 0) ImageClass.CRITICAL else ImageClass.NON_CRITICAL) }
         } + neededDepths.map { ImageAllocation("depthtex$it", w, h, 4, ImageClass.CRITICAL) } +
-            if (needsNormals) listOf(ImageAllocation("normalsTex", w, h, 4, ImageClass.NON_CRITICAL)) else emptyList()
+            (if (needsNormals) listOf(ImageAllocation("normalsTex", w, h, 4, ImageClass.NON_CRITICAL)) else emptyList()) +
+            ShadowRenderer.allocations()
         val budgetMiB = System.getProperty("vertex.memoryBudgetMiB")?.toLongOrNull() ?: 512L
         require(budgetMiB in 64..16384) { "vertex.memoryBudgetMiB must be between 64 and 16384" }
         packBudgetBytes = budgetMiB * MIB
         val plan = MemoryBudgetGovernor.plan(allocations, packBudgetBytes, w, h)
+        ShadowRenderer.configure(plan.allocations)
         targetBytes = plan.bytes
+        plan.degradations.forEach { dev.vertex.Vertex.log.warn("[Vertex] memory budget: {}", it) }
         dev.vertex.Vertex.log.info("[Vertex] pack target budget: {} MiB / {} MiB", plan.bytes / MIB, budgetMiB)
     }
 

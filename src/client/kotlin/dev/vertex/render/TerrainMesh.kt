@@ -103,6 +103,19 @@ object TerrainMesh {
     }
     @JvmStatic
     fun compiledFor(pipeline: RenderPipeline): CompiledRenderPipeline? = prepared?.compiled?.get(pipeline)
+
+    @JvmStatic
+    fun isPrepared() = prepared != null
+
+    @JvmStatic
+    fun vertexFormat() = customFormat
+
+    @JvmStatic
+    fun isMultidrawPipeline(pipeline: RenderPipeline): Boolean? = prepared?.let { state -> when (pipeline) {
+        state.solid.multidraw, state.cutout.multidraw -> true
+        state.solid.base, state.cutout.base -> false
+        else -> null
+    } }
     @JvmStatic
     fun setCurrentBlock(blockState: net.minecraft.world.level.block.state.BlockState) {
         val rawId = net.minecraft.world.level.block.Block.getId(blockState)

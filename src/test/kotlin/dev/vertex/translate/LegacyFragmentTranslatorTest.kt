@@ -29,9 +29,11 @@ class LegacyFragmentTranslatorTest {
     @Test
     fun `preserves legacy shadow vector return and frag color`() {
         val translated = LegacyFragmentTranslator.translate(
-            "void main() { gl_FragColor = shadow2D(shadowtex0, vec3(0.5)); }",
+            "uniform sampler2DShadow shadowtex0; void main() { gl_FragColor = shadow2D(shadowtex0, vec3(0.5)); }",
         )
         assertContains(translated, "#define shadow2D")
+        assertContains(translated, "uniform sampler2D shadowtex0")
+        assertContains(translated, "<= texture")
         assertContains(translated, "vertexFragColor0 = shadow2D")
     }
 

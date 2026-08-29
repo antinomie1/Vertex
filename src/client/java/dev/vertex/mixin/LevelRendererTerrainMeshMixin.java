@@ -6,6 +6,7 @@ import com.mojang.renderpearl.api.commands.RenderPass;
 import com.mojang.renderpearl.api.pipeline.RenderPipeline;
 import dev.vertex.render.PackChain;
 import dev.vertex.render.TerrainMesh;
+import dev.vertex.render.ShadowRenderer;
 import java.util.Optional;
 import java.util.OptionalDouble;
 import net.minecraft.client.Minecraft;
@@ -34,8 +35,17 @@ public abstract class LevelRendererTerrainMeshMixin {
     );
 
     @Inject(method = "lambda$addMainPass$0", at = @At("HEAD"))
-    private void vertex$runEarlyPackPrograms(CallbackInfo ci) {
+    private void vertex$runEarlyPackPrograms(
+        com.mojang.renderpearl.api.buffers.GpuBufferSlice fog,
+        boolean oit,
+        ChunkSectionsToRender sections,
+        FeatureRenderDispatcher.PreparedFrame features,
+        boolean outlines,
+        boolean alwaysOnTop,
+        CallbackInfo ci
+    ) {
         PackChain.beginFrame();
+        ShadowRenderer.render(sections);
     }
 
     /** Splits the main pass only when depthtex1 needs the pre-translucent snapshot. */

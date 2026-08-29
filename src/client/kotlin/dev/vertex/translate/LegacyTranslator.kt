@@ -117,4 +117,62 @@ layout(location = 0) out vec4 fragColor;
 
 """ + body.trimStart() + "\n"
     }
+
+    fun shadowVertex(program: LoadedProgram): String {
+        var location = 0
+        var body = program.vertexSource
+            .replace(Regex("""^\s*#(?:version|extension)[^\n]*""", RegexOption.MULTILINE), "")
+            .replace(Regex("""\bvarying\s+(\w+)\s+(\w+)\s*;""")) {
+                "layout(location = ${location++}) out ${it.groupValues[1]} ${it.groupValues[2]};"
+            }
+            .replace(Regex("""\bftransform\s*\(\s*\)"""), "vertexShadowMvp * vec4(pos, 1.0)")
+            .replace(Regex("""\bgl_Vertex\b"""), "vec4(pos, 1.0)")
+            .replace(Regex("""\bgl_MultiTexCoord0\b"""), "vec4(UV0, 0.0, 1.0)")
+            .replace(Regex("""\bgl_TextureMatrix\s*\[\s*0\s*]"""), "mat4(1.0)")
+            .replace(Regex("""\bgl_Color\b"""), "Color")
+            .replace(Regex("""\bgl_NormalMatrix\b"""), "mat3(1.0)")
+            .replace(Regex("""\bgl_Normal\b"""), "Normal")
+        val main = Regex("""void\s+main\s*\(\s*\)\s*\{""").find(body)
+            ?: error("${program.name}: shadow vertex shader has no main()")
+        body = body.replaceRange(main.range, main.value + "\n    vec3 pos = Position + (ChunkPosition - CameraBlockPos) + CameraOffset;")
+        return SHADOW_HEADER + body.trimStart()
+    }
+
+    fun shadowFragment(program: LoadedProgram): String {
+        var location = 0
+        var body = program.fragmentSource
+            .replace(Regex("""^\s*#(?:version|extension)[^\n]*""", RegexOption.MULTILINE), "")
+            .replace(Regex("""^\s*/\*\s*(?:DRAWBUFFERS|RENDERTARGETS)\s*:[^*]*\*/\s*$""", RegexOption.MULTILINE), "")
+            .replace(Regex("""uniform\s+sampler2D\s+(?:texture|gtexture)\s*;"""), "")
+            .replace(Regex("""\bvarying\s+(\w+)\s+(\w+)\s*;""")) {
+                "layout(location = ${location++}) in ${it.groupValues[1]} ${it.groupValues[2]};"
+            }
+            .replace(Regex("""\b(?:texture|gtexture)\b"""), "Sampler0")
+            .replace(Regex("""\btexture2D\s*\("""), "texture(")
+            .replace(Regex("""\bgl_FragData\s*\[\s*0\s*]"""), "shadowColor")
+            .replace(Regex("""\bgl_FragColor\b"""), "shadowColor")
+        return """#version 330
+#extension GL_ARB_separate_shader_objects : require
+uniform sampler2D Sampler0;
+layout(location = 0) out vec4 shadowColor;
+""" + body.trimStart()
+    }
+
+    private const val SHADOW_HEADER = """#version 330
+#extension GL_ARB_separate_shader_objects : require
+#include <minecraft:globals.glsl>
+#ifndef MULTIDRAW_TERRAIN
+#include <minecraft:chunksection.glsl>
+#endif
+layout(location=0) in vec3 Position;
+layout(location=1) in vec4 Color;
+layout(location=2) in vec2 UV0;
+#ifdef MULTIDRAW_TERRAIN
+layout(location=5) in ivec3 ChunkPosition;
+layout(location=7) in vec3 Normal;
+#else
+layout(location=5) in vec3 Normal;
+#endif
+layout(std140) uniform ShadowUniforms { mat4 vertexShadowMvp; };
+"""
 }

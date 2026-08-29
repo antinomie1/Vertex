@@ -64,6 +64,14 @@ object PackFrontend {
         return LoadedProgram("gbuffers_terrain", vsh, fsh, null, samplers, outputs(fsh), emptySet())
     }
 
+    fun loadShadow(packRoot: Path, options: Map<String, String> = emptyMap()): LoadedProgram? {
+        val sh = packRoot.resolve("shaders")
+        val name = listOf("shadow", "shadow_solid").firstOrNull {
+            Files.isRegularFile(sh.resolve("$it.vsh")) && Files.isRegularFile(sh.resolve("$it.fsh"))
+        } ?: return null
+        return load(sh, name, options)
+    }
+
     private fun outputs(source: String): List<Int> {
         val targets = RENDER_TARGETS.find(source)?.groupValues?.get(1)?.split(',')
             ?.map(String::trim)?.map(String::toInt)

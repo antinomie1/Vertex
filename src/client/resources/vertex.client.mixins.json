@@ -12,6 +12,7 @@
     "LevelRendererTerrainMeshMixin",
     "SectionCompilerMeshMixin",
     "SectionRenderDispatcherMeshMixin",
+    "ShadowInvalidationMixin",
     "ChunkSectionsToRenderMeshMixin",
     "ChunkSectionsToRenderDrawMixin",
     "ModelBlockRendererMeshMixin",

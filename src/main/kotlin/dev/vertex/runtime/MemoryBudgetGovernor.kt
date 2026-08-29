@@ -35,10 +35,18 @@ object MemoryBudgetGovernor {
         fun total() = allocations.sumOf(ImageAllocation::bytes)
         if (total() <= budgetBytes) return MemoryPlan(allocations, total(), changes)
 
-        allocations.indices.filter { allocations[it].imageClass == ImageClass.SHADOW }.forEach { index ->
-            val old = allocations[index]
-            allocations[index] = old.copy(width = maxOf(1, old.width / 2), height = maxOf(1, old.height / 2))
-            changes += "${old.id}: shadow resolution halved"
+        val shadowFloor = maxOf(256, maxOf(screenWidth, screenHeight) * 2)
+        while (total() > budgetBytes) {
+            val shadows = allocations.indices.filter {
+                allocations[it].imageClass == ImageClass.SHADOW &&
+                    maxOf(allocations[it].width, allocations[it].height) > shadowFloor
+            }
+            if (shadows.isEmpty()) break
+            shadows.forEach { index ->
+                val old = allocations[index]
+                allocations[index] = old.copy(width = maxOf(1, old.width / 2), height = maxOf(1, old.height / 2))
+                changes += "${old.id}: shadow resolution halved"
+            }
         }
         if (total() <= budgetBytes) return MemoryPlan(allocations, total(), changes)
 
