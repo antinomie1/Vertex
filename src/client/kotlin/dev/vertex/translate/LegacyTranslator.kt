@@ -45,6 +45,7 @@ object LegacyTranslator {
             .replace(Regex("""\bat_midBlock\b"""), "((fract(Position) - vec3(0.5)) * 64.0)")
             .replace(Regex("""\bmc_midTexCoord\b"""), "vec4(UV3, 0.0, 1.0)")
             .replace(Regex("""\bat_tangent\b|\btangent\b"""), "vec4(normalize(cross(abs(Normal.y) > 0.99 ? vec3(1, 0, 0) : vec3(0, 1, 0), Normal)), 1.0)")
+            .let(LegacyUniformTranslator::translate)
         val main = Regex("""void\s+main\s*\(\s*\)\s*\{""").find(body)
             ?: error("${program.name}: terrain vertex shader has no main()")
         body = body.replaceRange(main.range, main.value + """
@@ -103,15 +104,12 @@ $outputs
             .replace(Regex("""^#extension[^\n]*""", RegexOption.MULTILINE), "")
             .replace(Regex("""uniform\s+sampler2D\s+(texture|gtexture)\s*;"""), "")
             .replace(Regex("""uniform\s+sampler2D\s+lightmap\s*;"""), "")
-            .replace(VARYING) { match ->
-                val name = match.groupValues[2]
-                "layout(location = ${3 + varyings.keys.indexOf(name)}) in ${match.groupValues[1]} $name;"
-            }
+            .let { replaceVaryingInputs(it, varyings, 3) }
             .replace(Regex("""texture2D\s*\("""), "texture(")
             .replace(Regex("""\b(texture|gtexture)\b(?!\s*\()"""), "Sampler0")
             .replace(Regex("""\blightmap\b"""), "Sampler2")
             .let(::modernizeTextureCalls)
-            .replace(Regex("""gl_FragData\s*\[\s*0\s*\]\s*=\s*([^;]+);"""), "vec4 _outCol = $1;\n    #ifdef ALPHA_CUTOUT\n    if (_outCol.a < ALPHA_CUTOUT) discard;\n    #endif\n    _outCol = mix(FogColor * vec4(1, 1, 1, _outCol.a), _outCol, chunkVisibility);\n    fragColor = apply_fog(_outCol, sphericalVertexDistance, cylindricalVertexDistance, FogEnvironmentalStart, FogEnvironmentalEnd, FogRenderDistanceStart, FogRenderDistanceEnd, FogColor);")
+            .let(LegacyUniformTranslator::translate)
         return """#version 330
 #extension GL_ARB_separate_shader_objects : require
 #include <minecraft:fog.glsl>
@@ -151,6 +149,7 @@ layout(location = 0) out vec4 fragColor;
             .replace(Regex("""\bgl_Normal\b"""), "Normal")
             .replace(Regex("""\bgl_Vertex\b"""), "vec4(Position, 1.0)")
             .replace(Regex("""\bftransform\s*\(\s*\)"""), "(ProjMat * ModelViewMat * vec4(Position, 1.0))")
+            .let(LegacyUniformTranslator::translate)
 
         val main = Regex("""void\s+main\s*\(\s*\)\s*\{""").find(body)
             ?: error("${program.name}: dynamic vertex shader has no main()")
@@ -199,6 +198,7 @@ $outputs
             .replace(Regex("""\bgl_Vertex\b"""), "vec4(Position, 1.0)")
             .replace(Regex("""\bftransform\s*\(\s*\)"""), "(ProjMat * ModelViewMat * vec4(Position, 1.0))")
             .let(::modernizeTextureCalls)
+            .let(LegacyUniformTranslator::translate)
         require(!Regex("""\bgl_Normal(?:Matrix)?\b""").containsMatchIn(body)) {
             "${program.name}: block vertex shader references unavailable normal attributes"
         }
@@ -237,15 +237,13 @@ $outputs
             .replace(Regex("""^\s*#(?:version|extension)[^\n]*""", RegexOption.MULTILINE), "")
             .replace(Regex("""uniform\s+sampler2D\s+(texture|gtexture)\s*;"""), "")
             .replace(Regex("""uniform\s+sampler2D\s+lightmap\s*;"""), "")
-            .replace(VARYING) { match ->
-                val name = match.groupValues[2]
-                "layout(location = ${2 + varyings.keys.indexOf(name)}) in ${match.groupValues[1]} $name;"
-            }
+            .let { replaceVaryingInputs(it, varyings, 2) }
             .replace(Regex("""\b(texture|gtexture)\b(?!\s*\()"""), "Sampler0")
             .replace(Regex("""\blightmap\b"""), "Sampler2")
             .let(::modernizeTextureCalls)
             .replace(Regex("""\bgl_FragData\s*\[\s*0\s*]"""), "fragColor")
             .replace(Regex("""\bgl_FragColor\b"""), "fragColor")
+            .let(LegacyUniformTranslator::translate)
         require(!Regex("""gl_FragData\s*\[\s*[1-9]""").containsMatchIn(body)) {
             "dynamic fragment programs must write only render target 0"
         }
@@ -274,6 +272,7 @@ layout(location = 0) out vec4 fragColor;
             .replace(Regex("""\bgl_Color\b"""), "ColorModulator")
             .replace(Regex("""\bftransform\s*\(\s*\)"""), "(ProjMat * ModelViewMat * vec4(Position, 1.0))")
             .let(::modernizeTextureCalls)
+            .let(LegacyUniformTranslator::translate)
         val main = Regex("""void\s+main\s*\(\s*\)\s*\{""").find(body)
             ?: error("${program.name}: sky vertex shader has no main()")
         if (includeFog) body = body.replaceRange(main.range, main.value + """
@@ -302,14 +301,12 @@ $outputs
         val body = program.fragmentSource
             .replace(Regex("""^\s*#(?:version|extension)[^\n]*""", RegexOption.MULTILINE), "")
             .replace(Regex("""uniform\s+sampler2D\s+(texture|gtexture)\s*;"""), "")
-            .replace(VARYING) { match ->
-                val name = match.groupValues[2]
-                "layout(location = ${2 + varyings.keys.indexOf(name)}) in ${match.groupValues[1]} $name;"
-            }
+            .let { replaceVaryingInputs(it, varyings, 2) }
             .replace(Regex("""\b(texture|gtexture)\b(?!\s*\()"""), "Sampler0")
             .replace(Regex("""\bgl_FragData\s*\[\s*0\s*]"""), "fragColor")
             .replace(Regex("""\bgl_FragColor\b"""), "fragColor")
             .let(::modernizeTextureCalls)
+            .let(LegacyUniformTranslator::translate)
         require(!Regex("""gl_FragData\s*\[\s*[1-9]""").containsMatchIn(body)) {
             "sky fragment programs must write only render target 0"
         }
@@ -335,9 +332,13 @@ layout(location = 0) out vec4 fragColor;
             .replace(Regex("""\bgl_Vertex\b"""), "vec4(Position, 1.0)")
             .replace(Regex("""\bgl_Color\b"""), "Color")
             .replace(Regex("""\bgl_MultiTexCoord0\b"""), "vec4(UV0, 0.0, 1.0)")
+            .replace(Regex("""\bgl_MultiTexCoord1\b"""), "vec4(UV2, 0.0, 1.0)")
             .replace(Regex("""\bgl_MultiTexCoord2\b"""), "vec4(UV2, 0.0, 1.0)")
+            .replace(Regex("""\bgl_TextureMatrix\s*\[\s*0\s*]"""), "TextureMat")
+            .replace(Regex("""\bgl_TextureMatrix\s*\[\s*1\s*]"""), "mat4(1.0)")
             .replace(Regex("""\bftransform\s*\(\s*\)"""), "(ProjMat * ModelViewMat * vec4(Position, 1.0))")
             .let(::modernizeTextureCalls)
+            .let(LegacyUniformTranslator::translate)
         val main = Regex("""void\s+main\s*\(\s*\)\s*\{""").find(body)
             ?: error("${program.name}: particle vertex shader has no main()")
         body = body.replaceRange(main.range, main.value + """
@@ -370,8 +371,10 @@ $outputs
         var location = 0
         var body = program.vertexSource
             .replace(Regex("""^\s*#(?:version|extension)[^\n]*""", RegexOption.MULTILINE), "")
-            .replace(Regex("""\bvarying\s+(?:(?:lowp|mediump|highp)\s+)?(\w+)\s+(\w+)\s*;""")) {
-                "layout(location = ${location++}) out ${it.groupValues[1]} ${it.groupValues[2]};"
+            .replace(VARYING) { match ->
+                match.groupValues[2].split(',').joinToString("\n") { raw ->
+                    "layout(location = ${location++}) out ${match.groupValues[1]} ${raw.trim()};"
+                }
             }
             .replace(Regex("""\bftransform\s*\(\s*\)"""), "vertexShadowMvp * vec4(pos, 1.0)")
             .replace(Regex("""\bgl_Vertex\b"""), "vec4(pos, 1.0)")
@@ -384,6 +387,7 @@ $outputs
             .replace(Regex("""\bgl_NormalMatrix\b"""), "mat3(1.0)")
             .replace(Regex("""\bgl_Normal\b"""), "Normal")
             .let(::modernizeTextureCalls)
+            .let(LegacyUniformTranslator::translate)
         val main = Regex("""void\s+main\s*\(\s*\)\s*\{""").find(body)
             ?: error("${program.name}: shadow vertex shader has no main()")
         body = body.replaceRange(main.range, main.value + "\n    vec3 pos = Position + (ChunkPosition - CameraBlockPos) + CameraOffset;")
@@ -396,12 +400,15 @@ $outputs
             .replace(Regex("""^\s*#(?:version|extension)[^\n]*""", RegexOption.MULTILINE), "")
             .replace(Regex("""^\s*/\*\s*(?:DRAWBUFFERS|RENDERTARGETS)\s*:[^*]*\*/\s*$""", RegexOption.MULTILINE), "")
             .replace(Regex("""uniform\s+sampler2D\s+(?:texture|gtexture)\s*;"""), "")
-            .replace(Regex("""\bvarying\s+(?:(?:lowp|mediump|highp)\s+)?(\w+)\s+(\w+)\s*;""")) {
-                "layout(location = ${location++}) in ${it.groupValues[1]} ${it.groupValues[2]};"
+            .replace(VARYING) { match ->
+                match.groupValues[2].split(',').joinToString("\n") { raw ->
+                    "layout(location = ${location++}) in ${match.groupValues[1]} ${raw.trim()};"
+                }
             }
             // Replace only the legacy sampler identifier; keep modern texture(...) calls intact.
             .replace(Regex("""\b(?:texture|gtexture)\b(?!\s*\()"""), "Sampler0")
             .let(::modernizeTextureCalls)
+            .let(LegacyUniformTranslator::translate)
             .replace(Regex("""\bgl_FragData\s*\[\s*0\s*]"""), "shadowColor")
             .replace(Regex("""\bgl_FragColor\b"""), "shadowColor")
         return """#version 330
@@ -429,17 +436,26 @@ layout(location=5) in vec3 Normal;
 layout(std140) uniform ShadowUniforms { mat4 vertexShadowMvp; };
 """
 
-    private val VARYING = Regex("""varying\s+(?:(?:lowp|mediump|highp)\s+)?(\w+)\s+(\w+)\s*;""")
+    private val VARYING = Regex("""varying\s+(?:(?:lowp|mediump|highp)\s+)?(\w+)\s+([^;]+);""")
     private val TEXTURE_CALL = Regex("""\b(texture2DProj|texture2D|texture3D|textureCube)\s*\(""")
 
     private fun modernizeTextureCalls(source: String) = source.replace(TEXTURE_CALL) {
         (if (it.groupValues[1] == "texture2DProj") "textureProj" else "texture") + "("
     }
 
+    private fun replaceVaryingInputs(source: String, varyings: Map<String, String>, base: Int) =
+        source.replace(VARYING) { match ->
+            match.groupValues[2].split(',').joinToString("\n") { raw ->
+                val name = raw.trim()
+                "layout(location = ${base + varyings.keys.indexOf(name)}) in ${match.groupValues[1]} $name;"
+            }
+        }
+
     private fun varyingDeclarations(source: String): LinkedHashMap<String, String> = LinkedHashMap<String, String>().also { result ->
         VARYING.findAll(source).forEach { match ->
-            val name = match.groupValues[2]
-            require(result.put(name, match.groupValues[1]) == null) { "duplicate terrain varying '$name'" }
+            match.groupValues[2].split(',').map(String::trim).forEach { name ->
+                require(result.put(name, match.groupValues[1]) == null) { "duplicate terrain varying '$name'" }
+            }
         }
     }
 }

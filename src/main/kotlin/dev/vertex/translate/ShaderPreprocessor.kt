@@ -83,8 +83,10 @@ class ShaderPreprocessor(
     private fun resolve(path: Path, relativeTo: Path?): Path {
         val candidates = buildList {
             if (path.isAbsolute) add(path)
-            if (relativeTo != null) add(relativeTo.resolve(path))
-            roots.forEach { add(it.resolve(path)) }
+            if (relativeTo != null && !path.isAbsolute) add(relativeTo.resolve(path.toString()))
+            roots.forEach { root ->
+                add(root.resolve(if (path.isAbsolute) path.toString().removePrefix("/") else path.toString()))
+            }
         }.map { it.toAbsolutePath().normalize() }
         return candidates.firstOrNull { candidate ->
             roots.any(candidate::startsWith) && Files.isRegularFile(candidate)

@@ -32,6 +32,15 @@ class LegacyFullscreenVertexTranslatorTest {
     }
 
     @Test
+    fun `expands comma-separated varyings`() {
+        val translated = LegacyFullscreenVertexTranslator.translate(
+            "varying vec3 sunVec, upVec; void main() { sunVec = vec3(1.0); upVec = sunVec; gl_Position = ftransform(); }",
+        )
+        assertContains(translated, "layout(location = 0) out vec3 sunVec;")
+        assertContains(translated, "layout(location = 1) out vec3 upVec;")
+    }
+
+    @Test
     fun `maps legacy fullscreen builtins and texture calls`() {
         val translated = LegacyFullscreenVertexTranslator.translate(
             "uniform sampler2D tex; void main() { gl_Position = gl_Vertex; gl_FragCoord = texture2D(tex, gl_MultiTexCoord1.xy); }",

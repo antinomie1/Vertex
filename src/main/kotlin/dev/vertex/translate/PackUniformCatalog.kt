@@ -14,12 +14,18 @@ object PackUniformCatalog {
         "eyeAltitude" to f(), "sunAngle" to f(), "shadowAngle" to f(), "nightVision" to f(),
         "blindness" to f(), "darknessFactor" to f(), "screenBrightness" to f(), "centerDepthSmooth" to f(),
         "rainfall" to f(), "temperature" to f(), "fogDensity" to f(), "fogStart" to f(), "fogEnd" to f(),
+        "endFlashIntensity" to f(), "shadowFade" to f(), "timeAngle" to f(), "timeBrightness" to f(),
+        "blindFactor" to f(), "dhFarPlane" to f(), "dhNearPlane" to f(), "framemod2" to f(),
+        "framemod8" to f(), "isBasalt" to f(), "isCold" to f(), "isCrimson" to f(), "isDesert" to f(),
+        "isJungle" to f(), "isMesa" to f(), "isMushroom" to f(), "isSavanna" to f(), "isSwamp" to f(),
+        "isValley" to f(), "isWarped" to f(),
         "darknessLightFactor" to f(), "heldBlockLightValue" to f(), "heldBlockLightValue2" to f(),
         "playerMood" to f(), "constantMood" to f(), "thunderStrength" to f(), "cloudTime" to f(),
         "cloudHeight" to f(), "pi" to f(), "frameTimeSmooth" to f(), "frameCounter" to i(), "worldTime" to i(),
         "worldDay" to i(), "moonPhase" to i(), "isEyeInWater" to i(), "hideGUI" to b(), "biome" to i(),
         "biome_category" to i(), "biome_precipitation" to i(), "heldItemId" to i(), "heldItemId2" to i(),
         "entityId" to i(), "blockEntityId" to i(), "currentRenderedItemId" to i(), "renderStage" to i(),
+        "bedrockLevel" to i(), "dhRenderDistance" to i(), "heightLimit" to i(), "vxRenderDistance" to i(),
         "fogMode" to i(), "fogShape" to i(), "anisotropicFiltering" to i(), "textureReloadCount" to i(),
         "isRightHanded" to b(), "is_sneaking" to b(), "is_sprinting" to b(), "is_hurt" to b(),
         "is_invisible" to b(), "is_burning" to b(), "is_on_ground" to b(), "firstPersonCamera" to b(),
@@ -28,6 +34,7 @@ object PackUniformCatalog {
         "shadowLightPosition" to v3(), "upPosition" to v3(), "skyColor" to v3(),
         "fogColor" to v3(), "heldBlockLightColor" to v3(), "heldBlockLightColor2" to v3(),
         "cameraPositionFract" to v3(), "previousCameraPositionFract" to v3(),
+        "endFlashPosition" to v3(), "relativeEyePosition" to v3(),
         "cameraPositionInt" to iv3(), "previousCameraPositionInt" to iv3(), "currentDate" to iv3(),
         "currentTime" to iv3(),
         "eyeBrightness" to iv2(), "eyeBrightnessSmooth" to iv2(), "terrainTextureSize" to iv2(),
@@ -36,6 +43,8 @@ object PackUniformCatalog {
         "gbufferProjection" to m4(), "gbufferProjectionInverse" to m4(), "gbufferPreviousProjection" to m4(),
         "shadowModelView" to m4(), "shadowModelViewInverse" to m4(),
         "shadowProjection" to m4(), "shadowProjectionInverse" to m4(),
+        "dhProjection" to m4(), "dhPreviousProjection" to m4(), "dhProjectionInverse" to m4(),
+        "vxProj" to m4(), "vxProjInv" to m4(), "vxProjPrev" to m4(),
         "gbufferNormal" to m3(), "gbufferNormalInverse" to m3(), "gbufferPreviousNormal" to m3(),
     )
 
@@ -62,13 +71,14 @@ object PackUniformCatalog {
 }
 
 object LegacyUniformTranslator {
-    fun uniforms(source: String): Set<String> = DECLARATION.findAll(source).map { match ->
+    fun uniforms(source: String): Set<String> = DECLARATION.findAll(source).flatMap { match ->
         val type = match.groupValues[1]
-        val name = match.groupValues[2]
-        val spec = PackUniformCatalog.specs[name]
-            ?: throw IllegalArgumentException("unsupported shader uniform '$type $name'")
-        require(spec.glslType == type) { "$name is declared as $type; expected ${spec.glslType}" }
-        name
+        match.groupValues[2].split(',').asSequence().map { it.trim() }.map { name ->
+            val spec = PackUniformCatalog.specs[name]
+                ?: throw IllegalArgumentException("unsupported shader uniform '$type $name'")
+            require(spec.glslType == type) { "$name is declared as $type; expected ${spec.glslType}" }
+            name
+        }
     }.toSet()
 
     fun translate(source: String): String {
@@ -77,6 +87,6 @@ object LegacyUniformTranslator {
     }
 
     private val DECLARATION = Regex(
-        """\buniform\s+(?:(?:lowp|mediump|highp)\s+)?(float|int|bool|vec[234]|ivec[234]|mat[234])\s+(\w+)\s*;""",
+        """\buniform\s+(?:(?:lowp|mediump|highp)\s+)?(float|int|bool|vec[234]|ivec[234]|mat[234])\s+([^;]+);""",
     )
 }

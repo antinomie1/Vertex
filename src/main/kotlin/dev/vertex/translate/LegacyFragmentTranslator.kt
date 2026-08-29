@@ -4,7 +4,7 @@ import dev.vertex.frontend.ColorNumericType
 
 /** Stateless GLSL 1.20 fragment syntax modernization; runtime bindings are validated separately. */
 object LegacyFragmentTranslator {
-    private val varying = Regex("""\bvarying\s+(?:(?:lowp|mediump|highp)\s+)?(\w+)\s+(\w+)\s*;""")
+    private val varying = Regex("""\bvarying\s+(?:(?:lowp|mediump|highp)\s+)?(\w+)\s+([^;]+);""")
     private val fragData = Regex("""\bgl_FragData\s*\[\s*(\d+)\s*]""")
 
     fun translate(source: String, outputTypes: List<ColorNumericType> = emptyList()): String {
@@ -16,7 +16,9 @@ object LegacyFragmentTranslator {
         body = LegacyUniformTranslator.translate(body)
         var location = 0
         body = varying.replace(body) { match ->
-            "layout(location = ${location++}) in ${match.groupValues[1]} ${match.groupValues[2]};"
+            match.groupValues[2].split(',').joinToString("\n") { raw ->
+                "layout(location = ${location++}) in ${match.groupValues[1]} ${raw.trim()};"
+            }
         }
         body = body.replace(TEXTURE_CALL) {
             (if (it.groupValues[1] == "texture2DProj") "textureProj" else "texture") + "("

@@ -20,7 +20,8 @@ data class LoadedProgram(
 
 object PackFrontend {
     fun loadScreenChain(packRoot: Path, options: Map<String, String> = emptyMap()): List<LoadedProgram> {
-        val sh = packRoot.resolve("shaders")
+        val sh = shaderRoots(packRoot).firstOrNull { hasScreenPair(it) }
+            ?: throw IllegalArgumentException("${packRoot.resolve("shaders")}: expected setup, begin, prepare, deferred, composite, or final shader pair")
         val names = Files.list(sh).use { files ->
             files.map { it.fileName.toString() }
                 .filter { it.endsWith(".fsh") }
@@ -38,10 +39,10 @@ object PackFrontend {
         loadScreenChain(packRoot, options).first()
 
     private fun load(sh: Path, name: String, options: Map<String, String>): LoadedProgram {
-        val vsh = ShaderPreprocessor(listOf(sh), options).process(sh.resolve("$name.vsh"))
+        val vsh = ShaderPreprocessor(includeRoots(sh), options).process(sh.resolve("$name.vsh"))
         val fragmentFile = sh.resolve("$name.fsh")
         val outputs = outputs(Files.readString(fragmentFile))
-        val fsh = ShaderPreprocessor(listOf(sh), options).process(fragmentFile)
+        val fsh = ShaderPreprocessor(includeRoots(sh), options).process(fragmentFile)
 
         val varying = Regex("""varying\s+\w+\s+(\w+)\s*;""").findAll(vsh)
             .map { it.groupValues[1] }.firstOrNull()
@@ -54,11 +55,12 @@ object PackFrontend {
     }
 
     fun loadTerrain(packRoot: Path, options: Map<String, String> = emptyMap()): LoadedProgram {
-        val sh = packRoot.resolve("shaders")
+        val sh = shaderRoots(packRoot).firstOrNull { hasPair(it, "gbuffers_terrain") }
+            ?: packRoot.resolve("shaders")
         val vshFile = sh.resolve("gbuffers_terrain.vsh")
         val fshFile = sh.resolve("gbuffers_terrain.fsh")
-        val vsh = if (Files.isRegularFile(vshFile)) ShaderPreprocessor(listOf(sh), options).process(vshFile) else SamplePack.TERRAIN_VSH
-        val fsh = if (Files.isRegularFile(fshFile)) ShaderPreprocessor(listOf(sh), options).process(fshFile) else SamplePack.TERRAIN_FSH
+        val vsh = if (Files.isRegularFile(vshFile)) ShaderPreprocessor(includeRoots(sh), options).process(vshFile) else SamplePack.TERRAIN_VSH
+        val fsh = if (Files.isRegularFile(fshFile)) ShaderPreprocessor(includeRoots(sh), options).process(fshFile) else SamplePack.TERRAIN_FSH
         val samplers = SAMPLER.findAll(fsh)
             .map { it.groupValues[1] }.toList()
         return LoadedProgram("gbuffers_terrain", vsh, fsh, null, samplers, outputs(fsh), emptySet())
@@ -87,21 +89,45 @@ object PackFrontend {
         loadPair(packRoot, listOf("gbuffers_weather", "gbuffers_weather_basic"), options)
 
     fun loadShadow(packRoot: Path, options: Map<String, String> = emptyMap()): LoadedProgram? {
-        val sh = packRoot.resolve("shaders")
-        val name = listOf("shadow", "shadow_solid").firstOrNull {
-            Files.isRegularFile(sh.resolve("$it.vsh")) && Files.isRegularFile(sh.resolve("$it.fsh"))
-        } ?: return null
+        val match = shaderRoots(packRoot).asSequence()
+            .flatMap { sh -> listOf("shadow", "shadow_solid").asSequence().map { sh to it } }
+            .firstOrNull { (sh, name) -> hasPair(sh, name) } ?: return null
+        val (sh, name) = match
         return load(sh, name, options)
     }
 
     private fun loadPair(packRoot: Path, aliases: List<String>, options: Map<String, String>): LoadedProgram? {
-        val sh = packRoot.resolve("shaders")
-        val stem = aliases.firstOrNull { Files.isRegularFile(sh.resolve("$it.vsh")) && Files.isRegularFile(sh.resolve("$it.fsh")) }
-            ?: return null
-        val vsh = ShaderPreprocessor(listOf(sh), options).process(sh.resolve("$stem.vsh"))
-        val fsh = ShaderPreprocessor(listOf(sh), options).process(sh.resolve("$stem.fsh"))
+        val match = shaderRoots(packRoot).asSequence()
+            .flatMap { sh -> aliases.asSequence().map { sh to it } }
+            .firstOrNull { (sh, stem) -> hasPair(sh, stem) } ?: return null
+        val (sh, stem) = match
+        val vsh = ShaderPreprocessor(includeRoots(sh), options).process(sh.resolve("$stem.vsh"))
+        val fsh = ShaderPreprocessor(includeRoots(sh), options).process(sh.resolve("$stem.fsh"))
         val samplers = SAMPLER.findAll(fsh).map { it.groupValues[1] }.toList()
         return LoadedProgram(stem, vsh, fsh, null, samplers, outputs(fsh), emptySet())
+    }
+
+    private fun shaderRoots(packRoot: Path): List<Path> {
+        val shaders = packRoot.resolve("shaders")
+        if (!Files.isDirectory(shaders)) return listOf(shaders)
+        val worlds = Files.list(shaders).use { children ->
+            children.filter { Files.isDirectory(it) && it.fileName.toString().startsWith("world") }
+                .sorted().toList()
+        }
+        return listOf(shaders) + worlds
+    }
+
+    private fun hasPair(sh: Path, stem: String) =
+        Files.isRegularFile(sh.resolve("$stem.vsh")) && Files.isRegularFile(sh.resolve("$stem.fsh"))
+
+    private fun includeRoots(sh: Path): List<Path> = listOfNotNull(sh, sh.parent).distinct()
+
+    private fun hasScreenPair(sh: Path): Boolean = Files.list(sh).use { files ->
+        files.anyMatch { file ->
+            val name = file.fileName.toString()
+            name.endsWith(".fsh") && SCREEN_PROGRAM.matches(name.removeSuffix(".fsh")) &&
+                Files.isRegularFile(sh.resolve(name.removeSuffix(".fsh") + ".vsh"))
+        }
     }
 
     private fun outputs(source: String): List<Int> {

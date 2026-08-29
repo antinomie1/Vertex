@@ -32,6 +32,14 @@ class ShaderPreprocessorTest {
     }
 
     @Test
+    fun `resolves pack-root absolute includes`() {
+        val root = Files.createTempDirectory("vertex-preprocessor-root-include")
+        root.resolve("lib.glsl").writeText("vec3 shared = vec3(1.0);\n")
+        root.resolve("main.fsh").writeText("#include \"/lib.glsl\"\nvoid main() {}\n")
+        assertContains(ShaderPreprocessor(listOf(root)).process(root.resolve("main.fsh")), "vec3 shared")
+    }
+
+    @Test
     fun `include cycles fail with source context`() {
         val root = Files.createTempDirectory("vertex-preprocessor-cycle")
         root.resolve("a.glsl").writeText("#include \"b.glsl\"\n")

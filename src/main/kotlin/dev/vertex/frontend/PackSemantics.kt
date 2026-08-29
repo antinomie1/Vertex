@@ -56,7 +56,7 @@ object PackSemanticsParser {
         val shaders = packRoot.resolve("shaders")
         val settings = MutableList(16) { ColorBufferSettings() }
         var noiseResolution = 256
-        Files.list(shaders).use { files ->
+        Files.walk(shaders).use { files ->
             files.filter { Files.isRegularFile(it) && it.fileName.toString().substringAfterLast('.', "") in SHADER_EXTENSIONS }
                 .sorted().forEach { path ->
                     LEGACY_GAUX4.find(Files.readString(path))?.groupValues?.get(1)?.let { settings[7] = settings[7].copy(format = ColorFormat.parse(it)) }

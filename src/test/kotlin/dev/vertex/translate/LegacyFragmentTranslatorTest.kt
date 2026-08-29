@@ -27,6 +27,15 @@ class LegacyFragmentTranslatorTest {
     }
 
     @Test
+    fun `expands comma-separated fragment varyings`() {
+        val translated = LegacyFragmentTranslator.translate(
+            "varying vec3 sunVec, upVec; void main() { gl_FragColor = vec4(sunVec + upVec, 1.0); }",
+        )
+        assertContains(translated, "layout(location = 0) in vec3 sunVec;")
+        assertContains(translated, "layout(location = 1) in vec3 upVec;")
+    }
+
+    @Test
     fun `preserves legacy shadow vector return and frag color`() {
         val translated = LegacyFragmentTranslator.translate(
             "uniform sampler2DShadow shadowtex0; void main() { gl_FragColor = shadow2D(shadowtex0, vec3(0.5)); }",

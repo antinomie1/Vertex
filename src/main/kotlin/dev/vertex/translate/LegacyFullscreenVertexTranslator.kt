@@ -2,7 +2,7 @@ package dev.vertex.translate
 
 /** Rewrites legacy fullscreen vertex programs while preserving their varying calculations. */
 object LegacyFullscreenVertexTranslator {
-    private val varying = Regex("""\bvarying\s+(?:(?:lowp|mediump|highp)\s+)?(\w+)\s+(\w+)\s*;""")
+    private val varying = Regex("""\bvarying\s+(?:(?:lowp|mediump|highp)\s+)?(\w+)\s+([^;]+);""")
 
     fun translate(source: String): String {
         var location = 0
@@ -10,8 +10,10 @@ object LegacyFullscreenVertexTranslator {
             .replace(Regex("""^\s*#version[^\n]*""", RegexOption.MULTILINE), "")
             .replace(Regex("""^\s*#extension[^\n]*""", RegexOption.MULTILINE), "")
         body = LegacyUniformTranslator.translate(body)
-        body = varying.replace(body) {
-            "layout(location = ${location++}) out ${it.groupValues[1]} ${it.groupValues[2]};"
+        body = varying.replace(body) { match ->
+            match.groupValues[2].split(',').joinToString("\n") { raw ->
+                "layout(location = ${location++}) out ${match.groupValues[1]} ${raw.trim()};"
+            }
         }
         body = body
             .let(::modernizeTextureCalls)

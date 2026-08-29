@@ -33,4 +33,11 @@ class PackUniformCatalogTest {
     fun `accepts precision-qualified pack uniforms`() {
         assertEquals(setOf("viewWidth"), LegacyUniformTranslator.uniforms("uniform highp float viewWidth;"))
     }
+
+    @Test
+    fun `accepts comma-separated pack uniforms`() {
+        assertEquals(setOf("near", "far", "timeAngle"), LegacyUniformTranslator.uniforms(
+            "uniform float near, far; uniform float timeAngle;",
+        ))
+    }
 }
