@@ -77,7 +77,6 @@ object PackChain {
                 rp.setUniform("colortex0", sceneView, sampler)
                 rp.setUniform("depthtex0", depthView!!, sampler)
                 rp.setUniform("normalsTex", normalView!!, sampler)
-                rp.draw(3, 1, 0, 0)
             })
 
             // P2：回屏
@@ -85,7 +84,6 @@ object PackChain {
                 RenderSystem.bindDefaultUniforms(rp)
                 rp.setPipeline(blit!!)
                 rp.setUniform("InSampler", tempView!!, sampler)
-                rp.draw(3, 1, 0, 0)
             })
 
 
