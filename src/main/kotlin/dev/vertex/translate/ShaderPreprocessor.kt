@@ -109,8 +109,26 @@ class ShaderPreprocessor(
         } ?: throw IllegalArgumentException("shader include not found: $path")
     }
 
-    private fun expandOptions(line: String): String = IDENT.replace(line) {
-        options[it.value] ?: objectMacros[it.value] ?: it.value
+    private fun expandOptions(line: String): String {
+        // Shader packs commonly expose settings as typed constants rather than
+        // object-like macros.  Never substitute the declared identifier itself
+        // (`const int shadowMapResolution = ...`); doing so turns valid GLSL into
+        // `const int 2048 = ...` and makes the whole pack fall back to vanilla.
+        CONSTANT_DECLARATION.matchEntire(line)?.let { declaration ->
+            val name = declaration.groupValues[2]
+            options[name]?.takeIf(String::isNotBlank)?.let { value ->
+                return buildString(line.length + value.length) {
+                    append(declaration.groupValues[1])
+                    append(name)
+                    append(declaration.groupValues[3])
+                    append(value)
+                    append(declaration.groupValues[5])
+                }
+            }
+        }
+        return IDENT.replace(line) { token ->
+            options[token.value] ?: objectMacros[token.value] ?: token.value
+        }
     }
 
     private fun isDefined(name: String): Boolean = name in symbols &&
@@ -156,6 +174,9 @@ class ShaderPreprocessor(
         private val DEFINE = Regex("""([A-Za-z_]\w*)(\([^)]*\))?(?:\s+(.*))?""")
         private val COMMENTED_DEFINE = Regex("""\s*//\s*#\s*define\s+([A-Za-z_]\w*)\b.*""")
         private val IDENT = Regex("""\b[A-Za-z_]\w*\b""")
+        private val CONSTANT_DECLARATION = Regex(
+            """^(\s*(?:const\s+)?[A-Za-z_]\w*\s+)([A-Za-z_]\w*)(\s*=\s*)([^;]+)(;.*)$"""
+        )
         private val DIRECTIVE_COMMENT = Regex("""\s*(?:DRAWBUFFERS|RENDERTARGETS)\s*:""")
     }
 }

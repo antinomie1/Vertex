@@ -49,6 +49,23 @@ class ShaderPreprocessorTest {
     }
 
     @Test
+    fun `overrides typed settings without replacing declaration names`() {
+        val root = Files.createTempDirectory("vertex-preprocessor-typed-setting")
+        root.resolve("settings.glsl").writeText(
+            "const int shadowMapResolution = 2048; //[512 1024 2048]\n" +
+                "const float shadowDistance = 256.0; //[128.0 256.0]\n" +
+                "float bias = 1.0 / shadowDistance;\n",
+        )
+        val output = ShaderPreprocessor(
+            listOf(root),
+            mapOf("shadowMapResolution" to "1024", "shadowDistance" to "128.0"),
+        ).process(root.resolve("settings.glsl"))
+        assertContains(output, "const int shadowMapResolution = 1024;")
+        assertContains(output, "const float shadowDistance = 128.0;")
+        assertContains(output, "float bias = 1.0 / 128.0;")
+    }
+
+    @Test
     fun `overrides active and commented shader settings`() {
         val root = Files.createTempDirectory("vertex-preprocessor-settings")
         root.resolve("settings.glsl").writeText(
