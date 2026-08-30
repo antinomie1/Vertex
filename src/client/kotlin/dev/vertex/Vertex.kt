@@ -46,5 +46,13 @@ object Vertex : ClientModInitializer {
             PackChain.prepare()
             DynamicRenderer.prepare()
         }
+        minecraft.level?.let { level ->
+            minecraft.levelRenderer.invalidateCompiledGeometry(
+                level,
+                minecraft.options,
+                minecraft.gameRenderer.mainCamera(),
+                minecraft.getBlockColors(),
+            )
+        }
     }
 }
