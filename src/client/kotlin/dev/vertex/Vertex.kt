@@ -47,7 +47,8 @@ object Vertex : ClientModInitializer {
             DynamicRenderer.prepare()
         }
         minecraft.level?.let { level ->
-            minecraft.levelRenderer.invalidateCompiledGeometry(
+            dev.vertex.render.LevelRendererBridge.rebuildGeometry(
+                minecraft.levelRenderer,
                 level,
                 minecraft.options,
                 minecraft.gameRenderer.mainCamera(),

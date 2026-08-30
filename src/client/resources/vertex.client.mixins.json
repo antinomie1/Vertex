@@ -17,6 +17,7 @@
     "SectionCompilerMeshMixin",
     "SectionRenderDispatcherMeshMixin",
     "ShadowInvalidationMixin",
+    "LevelRendererDispatcherAccessor",
     "ChunkSectionsToRenderMeshMixin",
     "ChunkSectionsToRenderAccessor",
     "DrawIndirectAccessor",
