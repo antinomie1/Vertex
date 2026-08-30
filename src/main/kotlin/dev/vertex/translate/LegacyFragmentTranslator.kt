@@ -47,8 +47,22 @@ object LegacyFragmentTranslator {
             appendLine("#version 330")
             appendLine("#extension GL_ARB_separate_shader_objects : require")
             if ("shadow2D" in body) {
-                appendLine("#define shadow2D(s, c) vec4(float((c).z <= texture((s), (c).xy).r))")
-                appendLine("#define shadow2DProj(s, c) vec4(float((c).z / (c).w <= texture((s), (c).xy / (c).w).r))")
+                appendLine("""
+                    float vertexShadowCompare(sampler2D shadowMap, vec3 shadowCoord) {
+                        vec2 texel = 1.0 / vec2(textureSize(shadowMap, 0));
+                        vec2 cell = shadowCoord.xy / texel - 0.5;
+                        vec2 base = floor(cell);
+                        vec2 fraction = fract(cell);
+                        vec2 uv = (base + 0.5) * texel;
+                        float c00 = float(shadowCoord.z <= texture(shadowMap, uv).r);
+                        float c10 = float(shadowCoord.z <= texture(shadowMap, uv + vec2(texel.x, 0.0)).r);
+                        float c01 = float(shadowCoord.z <= texture(shadowMap, uv + vec2(0.0, texel.y)).r);
+                        float c11 = float(shadowCoord.z <= texture(shadowMap, uv + texel).r);
+                        return mix(mix(c00, c10, fraction.x), mix(c01, c11, fraction.x), fraction.y);
+                    }
+                """.trimIndent())
+                appendLine("#define shadow2D(s, c) vec4(vertexShadowCompare((s), (c)))")
+                appendLine("#define shadow2DProj(s, c) vec4(vertexShadowCompare((s), vec3((c).xy / (c).w, (c).z / (c).w)))")
             }
             legacyOutputs.sorted().forEach { location ->
                 appendLine("layout(location = $location) out ${outputType(outputTypes.getOrElse(location) { ColorNumericType.FLOAT })} vertexFragColor$location;")

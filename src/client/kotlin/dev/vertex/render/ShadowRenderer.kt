@@ -107,11 +107,14 @@ object ShadowRenderer {
         val root = PackRuntime.root(mc.gameDirectory.toPath())
         requested = PackFrontend.loadScreenChain(root, PackRuntime.options()).flatMap { it.samplers }
             .filter(SHADOW_SAMPLERS::contains).toSet()
-        parseShadowConstants(runCatching { PackFrontend.loadShadow(root, PackRuntime.options())?.vertexSource }.getOrNull())
         resolution = System.getProperty("vertex.shadowResolution")?.toIntOrNull() ?: 2048
         require(resolution in 256..8192 && resolution.countOneBits() == 1) {
             "vertex.shadowResolution must be a power of two in 256..8192"
         }
+        // Shader packs compile their sampling kernel against this value. Prefer
+        // the expanded pack constant so a host/UI resolution cannot silently
+        // produce a map with a different texel size.
+        parseShadowConstants(runCatching { PackFrontend.loadShadow(root, PackRuntime.options())?.vertexSource }.getOrNull())
     }
 
     fun allocations(): List<ImageAllocation> {
@@ -328,6 +331,9 @@ object ShadowRenderer {
         if (source == null) return
         SHADOW_DISTANCE.find(source)?.groupValues?.get(1)?.toFloatOrNull()?.takeIf { it > 0f }?.let { shadowDistance = it }
         SUN_PATH_ROTATION.find(source)?.groupValues?.get(1)?.toFloatOrNull()?.let { sunPathRotation = it }
+        SHADOW_MAP_RESOLUTION.find(source)?.groupValues?.get(1)?.toIntOrNull()
+            ?.takeIf { it in 256..8192 && it.countOneBits() == 1 }
+            ?.let { resolution = it }
     }
 
     private fun compile(
@@ -389,6 +395,7 @@ object ShadowRenderer {
 
     private fun id(path: String) = Identifier.fromNamespaceAndPath("vertex", path)
     private val SHADOW_SAMPLERS = setOf("shadowtex0", "shadowtex1", "shadowcolor0", "shadowcolor1")
+    private val SHADOW_MAP_RESOLUTION = Regex("""(?m)^\s*const\s+int\s+shadowMapResolution\s*=\s*(\d+)""")
     private val SHADOW_DISTANCE = Regex("""(?m)^\s*const\s+float\s+shadowDistance\s*=\s*([-+]?\d+(?:\.\d+)?)""")
     private val SUN_PATH_ROTATION = Regex("""(?m)^\s*const\s+float\s+sunPathRotation\s*=\s*([-+]?\d+(?:\.\d+)?)""")
     private val CLEAR = Vector4f(1f, 1f, 1f, 1f)
