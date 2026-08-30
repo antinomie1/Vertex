@@ -211,6 +211,11 @@ class VertexShadersScreen(private val parent: Screen?) : Screen(Component.litera
         super.extractRenderState(extractor, mouseX, mouseY, partialTick)
     }
 
+    override fun mouseClicked(event: MouseButtonEvent, doubleClick: Boolean): Boolean {
+        if (event.button() == 1 && packList?.handleClick(event) == true) return true
+        return super.mouseClicked(event, doubleClick)
+    }
+
     override fun onClose() = VertexUiBridge.show(parent)
     override fun isPauseScreen() = minecraft.level != null
 
@@ -351,7 +356,11 @@ class VertexShadersScreen(private val parent: Screen?) : Screen(Component.litera
         override fun updateWidgetNarration(output: NarrationElementOutput) = Unit
 
         override fun mouseClicked(event: MouseButtonEvent, doubleClick: Boolean): Boolean {
-            if (event.button() != 0 || !isMouseOver(event.x(), event.y())) return false
+            return handleClick(event) || super.mouseClicked(event, doubleClick)
+        }
+
+        fun handleClick(event: MouseButtonEvent): Boolean {
+            if (event.button() != 1 || !isMouseOver(event.x(), event.y())) return false
             val entry = getEntryAtPosition(event.x(), event.y()) ?: return false
             setSelected(entry)
             screen.choose(entry.pack)
@@ -388,7 +397,7 @@ class VertexShadersScreen(private val parent: Screen?) : Screen(Component.litera
             }
 
             override fun mouseClicked(event: MouseButtonEvent, doubleClick: Boolean): Boolean {
-                if (event.button() == 0 && isMouseOver(event.x(), event.y())) {
+                if (event.button() == 1 && isMouseOver(event.x(), event.y())) {
                     list.setSelected(this)
                     list.screen.choose(pack)
                     return true

@@ -202,8 +202,14 @@ private class Expression(
         take("(") -> or().also { require(take(")")) }
         else -> value(next())
     }
-    private fun value(token: String): Long = token.toLongOrNull() ?: token.removePrefix("0x").removePrefix("0X")
-        .takeIf { token.startsWith("0x", true) }?.toLong(16) ?: symbols[token]?.toLongOrNull() ?: 0L
+    private fun value(token: String): Long = literal(token) ?: symbols[token]?.let(::literal) ?: 0L
+
+    private fun literal(token: String): Long? = when {
+        token.equals("true", ignoreCase = true) -> 1L
+        token.equals("false", ignoreCase = true) -> 0L
+        token.startsWith("0x", ignoreCase = true) -> token.substring(2).toLongOrNull(16)
+        else -> token.toLongOrNull()
+    }
     private fun next(): String = tokens.getOrNull(at++) ?: error("unexpected end of preprocessor expression")
     private fun take(token: String): Boolean = tokens.getOrNull(at) == token && (++at > 0)
     private fun bool(value: Boolean) = if (value) 1L else 0L

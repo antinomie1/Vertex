@@ -120,6 +120,11 @@ class VertexShaderOptionsScreen(
         super.extractRenderState(extractor, mouseX, mouseY, partialTick)
     }
 
+    override fun mouseClicked(event: MouseButtonEvent, doubleClick: Boolean): Boolean {
+        if (event.button() == 1 && optionList?.handleClick(event) == true) return true
+        return super.mouseClicked(event, doubleClick)
+    }
+
     override fun onClose() = VertexUiBridge.show(parent)
 
     private fun openCategory(id: String, title: String) {
@@ -136,7 +141,6 @@ class VertexShaderOptionsScreen(
         values[option.key] = selected
         if (option.key == "profile") model.profileValues(selected).forEach { (key, value) -> values[key] = value }
         dirty = true
-        optionList?.refresh()
     }
 
     private fun apply() {
@@ -172,14 +176,33 @@ class VertexShaderOptionsScreen(
 
         fun refresh() {
             val scroll = scrollAmount()
+            val selectedKey = getSelected()?.item?.key()
             setItems(screen.model.items(screen.menu))
             setScrollAmount(scroll)
+            children().firstOrNull { it.item.key() == selectedKey }?.let(::setSelected)
+        }
+
+        private fun ShaderPackOptions.Item.key(): String = when (this) {
+            is ShaderPackOptions.Item.Option -> "option:${this.key}"
+            is ShaderPackOptions.Item.Subscreen -> "screen:$id"
+            is ShaderPackOptions.Item.Info -> "info:$text"
         }
 
         override fun extractListBackground(extractor: GuiGraphicsExtractor) = Unit
         override fun extractListSeparators(extractor: GuiGraphicsExtractor) = Unit
         override fun extractSelection(extractor: GuiGraphicsExtractor, entry: Entry, top: Int) = Unit
         override fun updateWidgetNarration(output: NarrationElementOutput) = Unit
+
+        override fun mouseClicked(event: MouseButtonEvent, doubleClick: Boolean): Boolean {
+            return handleClick(event) || super.mouseClicked(event, doubleClick)
+        }
+
+        fun handleClick(event: MouseButtonEvent, doubleClick: Boolean = false): Boolean {
+            if (event.button() != 1 || !isMouseOver(event.x(), event.y())) return false
+            val entry = getEntryAtPosition(event.x(), event.y()) ?: return false
+            setSelected(entry)
+            return entry.mouseClicked(event, doubleClick)
+        }
 
         class Entry(private val list: OptionList, val item: ShaderPackOptions.Item) : AbstractSelectionList.Entry<Entry>() {
             override fun extractContent(extractor: GuiGraphicsExtractor, mouseX: Int, mouseY: Int, hovered: Boolean, partialTick: Float) {
@@ -229,7 +252,7 @@ class VertexShaderOptionsScreen(
             private var dragging = false
 
             override fun mouseClicked(event: MouseButtonEvent, doubleClick: Boolean): Boolean {
-                if (event.button() != 0 || !isMouseOver(event.x(), event.y())) return false
+                if (event.button() != 1 || !isMouseOver(event.x(), event.y())) return false
                 list.setSelected(this)
                 when (item) {
                     is ShaderPackOptions.Item.Option -> if (item.option.slider) {
@@ -243,7 +266,7 @@ class VertexShaderOptionsScreen(
             }
 
             override fun mouseDragged(event: MouseButtonEvent, deltaX: Double, deltaY: Double): Boolean {
-                if (!dragging || event.button() != 0) return false
+                if (!dragging || event.button() != 1) return false
                 setSlider(event.x())
                 return true
             }

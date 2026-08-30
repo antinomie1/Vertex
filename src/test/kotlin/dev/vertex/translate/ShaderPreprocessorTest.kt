@@ -54,6 +54,7 @@ class ShaderPreprocessorTest {
         root.resolve("settings.glsl").writeText(
             "#define AO\n//#define CLOUDS\n#define CLOUD_MODE 2 //[1 2]\n" +
                 "#ifdef AO\nfloat ambient = 1.0;\n#else\nfloat ambient = 0.0;\n#endif\n" +
+                "#if CLOUDS\nfloat cloudMode = 1.0;\n#endif\n" +
                 "#ifdef CLOUDS\nfloat clouds = 1.0;\n#endif\n",
         )
         val source = root.resolve("main.glsl")
@@ -63,6 +64,7 @@ class ShaderPreprocessorTest {
             mapOf("AO" to "false", "CLOUDS" to "true", "CLOUD_MODE" to "1"),
         ).process(source)
         assertContains(output, "float ambient = 0.0;")
+        assertContains(output, "float cloudMode = 1.0;")
         assertContains(output, "float clouds = 1.0;")
         assertContains(output, "#define CLOUD_MODE 1")
     }
