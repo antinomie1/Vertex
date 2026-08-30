@@ -64,7 +64,7 @@ object DynamicRenderer {
     @JvmStatic
     @Synchronized
     fun prepare() {
-        if (prepared) return
+        if (prepared || !PackRuntime.isEnabled()) return
         val context = SharedVulkanContext.attach()
         if (context.tier(ProgramFamily.DYNAMIC_WORLD) != RenderTier.TIER_2) return
         try {

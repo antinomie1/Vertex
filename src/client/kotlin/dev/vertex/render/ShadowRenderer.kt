@@ -111,6 +111,7 @@ object ShadowRenderer {
     }
 
     fun prepare() {
+        if (!PackRuntime.isEnabled()) return
         if (SharedVulkanContext.attach().tier(ProgramFamily.TERRAIN_OPAQUE) != RenderTier.TIER_2 ||
             SharedVulkanContext.attach().tier(ProgramFamily.SCREEN_CHAIN) != RenderTier.TIER_2) return
         if (failed || base != null) return

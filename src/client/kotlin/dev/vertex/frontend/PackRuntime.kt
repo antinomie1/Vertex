@@ -4,14 +4,72 @@ import java.nio.file.FileSystem
 import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.Properties
 
 /** Resolves one immutable pack for the session; ZIP files stay mounted until shutdown. */
 object PackRuntime {
     private var root: Path? = null
     private var archive: FileSystem? = null
+    @Volatile private var enabled = true
+
+    data class Settings(
+        val enabled: Boolean,
+        val pack: String?,
+        val renderScale: Float,
+        val shadowResolution: Int,
+    )
 
     @Synchronized
     fun root(gameDir: Path): Path = root ?: select(gameDir).also { root = it }
+
+    fun isEnabled() = enabled
+
+    @Synchronized
+    fun initialize(gameDir: Path) {
+        val current = settings(gameDir)
+        enabled = current.enabled
+        if (System.getProperty("vertex.renderScale") == null)
+            System.setProperty("vertex.renderScale", current.renderScale.toString())
+        if (System.getProperty("vertex.shadowResolution") == null)
+            System.setProperty("vertex.shadowResolution", current.shadowResolution.toString())
+    }
+
+    fun settings(gameDir: Path): Settings {
+        val file = gameDir.resolve("config/vertex-shaders.properties")
+        val props = Properties()
+        if (Files.isRegularFile(file)) Files.newInputStream(file).use(props::load)
+        val pack = System.getProperty("vertex.pack")?.takeIf(String::isNotBlank)
+            ?: props.getProperty("pack")?.takeIf(String::isNotBlank)
+        return Settings(
+            enabled = System.getProperty("vertex.shadersEnabled")?.toBooleanStrictOrNull()
+                ?: props.getProperty("enabled")?.toBooleanStrictOrNull() ?: true,
+            pack = pack,
+            renderScale = (System.getProperty("vertex.renderScale") ?: props.getProperty("renderScale"))
+                ?.toFloatOrNull()?.takeIf { it in setOf(.5f, .75f, 1f) } ?: 1f,
+            shadowResolution = (System.getProperty("vertex.shadowResolution") ?: props.getProperty("shadowResolution"))
+                ?.toIntOrNull()?.takeIf { it in 256..8192 && it.countOneBits() == 1 } ?: 2048,
+        )
+    }
+
+    @Synchronized
+    fun apply(gameDir: Path, settings: Settings) {
+        enabled = settings.enabled
+        if (settings.pack == null) System.clearProperty("vertex.pack")
+        else System.setProperty("vertex.pack", settings.pack)
+        System.setProperty("vertex.shadersEnabled", settings.enabled.toString())
+        System.setProperty("vertex.renderScale", settings.renderScale.toString())
+        System.setProperty("vertex.shadowResolution", settings.shadowResolution.toString())
+        val file = gameDir.resolve("config/vertex-shaders.properties")
+        file.parent?.let(Files::createDirectories)
+        Properties().also {
+            it["enabled"] = settings.enabled.toString()
+            settings.pack?.let { pack -> it["pack"] = pack }
+            it["renderScale"] = settings.renderScale.toString()
+            it["shadowResolution"] = settings.shadowResolution.toString()
+            Files.newOutputStream(file).use { output -> it.store(output, "Vertex shader settings") }
+        }
+        close()
+    }
 
     fun options(): Map<String, String> = System.getProperty("vertex.options")
         ?.split(',')
@@ -28,7 +86,7 @@ object PackRuntime {
     }
 
     private fun select(gameDir: Path): Path {
-        val requested = System.getProperty("vertex.pack")?.takeIf(String::isNotBlank)
+        val requested = settings(gameDir).pack
             ?: return SamplePack.ensure(gameDir.resolve("shaderpacks"))
         val raw = Path.of(requested)
         val path = (if (raw.isAbsolute) raw else gameDir.resolve("shaderpacks").resolve(raw))

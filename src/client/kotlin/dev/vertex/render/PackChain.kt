@@ -346,6 +346,7 @@ object PackChain {
 
     @JvmStatic
     fun bindTerrainSamplers(pass: RenderPass, sampler: GpuSampler, atlas: GpuTextureView) {
+        if (!PackRuntime.isEnabled()) return
         // Minecraft's chunk-layer sampler is linear, but atlas coordinates point at
         // individual texels.  Nearest filtering keeps tile edges crisp and matches
         // the vanilla atlas sampler (including without mipmap support).
@@ -358,6 +359,7 @@ object PackChain {
 
     @JvmStatic
     fun bindTerrainAtlas(pass: RenderPass, atlas: GpuTextureView) {
+        if (!PackRuntime.isEnabled()) return
         pass.setUniform("Sampler0", atlas, RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST))
     }
 
@@ -373,6 +375,7 @@ object PackChain {
 
     @JvmStatic
     fun bindDynamicSamplers(pass: RenderPass) {
+        if (!PackRuntime.isEnabled()) return
         val scene = Minecraft.getInstance().gameRenderer.mainRenderTarget().colorTextureView ?: return
         val sampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR)
         fun bind(name: String, view: GpuTextureView?) {
@@ -388,7 +391,7 @@ object PackChain {
         bindShadowSamplers(pass, sampler)
     }
 
-    private fun enabled() = !failed &&
+    private fun enabled() = !failed && PackRuntime.isEnabled() &&
         SharedVulkanContext.attach().tier(ProgramFamily.SCREEN_CHAIN) == RenderTier.TIER_2
 
 

@@ -23,7 +23,9 @@
     "ChunkSectionsToRenderDrawMixin",
     "ModelBlockRendererMeshMixin",
     "VertexConsumerMeshMixin",
-    "BufferBuilderMeshMixin"
+    "BufferBuilderMeshMixin",
+    "PauseScreenMixin",
+    "ScreenWidgetsAccessor"
   ],
   "injectors": {
     "defaultRequire": 1

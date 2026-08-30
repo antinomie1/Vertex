@@ -75,6 +75,10 @@ object TerrainMesh {
     @JvmStatic
     @Synchronized
     fun prepare() {
+        if (!PackRuntime.isEnabled()) {
+            prepared = null
+            return
+        }
         if (SharedVulkanContext.attach().tier(ProgramFamily.TERRAIN_OPAQUE) != RenderTier.TIER_2) {
             prepared = null
             return
