@@ -1,7 +1,6 @@
 package dev.vertex.mixin;
 
 import dev.vertex.render.PackChain;
-import dev.vertex.render.TerrainMesh;
 import net.minecraft.client.renderer.StagedVertexBuffer;
 import net.minecraft.client.renderer.rendertype.PreparedRenderType;
 import com.mojang.renderpearl.api.commands.RenderPass;
@@ -33,11 +32,9 @@ public abstract class PreparedRenderTypeSamplerMixin {
         CallbackInfo ci
     ) {
         PackChain.bindDynamicSamplers(pass);
-        if (TerrainMesh.isMultidrawPipeline(pipeline) != null) {
-            textures().stream()
-                .filter(texture -> "Sampler0".equals(texture.name()))
-                .findFirst()
-                .ifPresent(texture -> PackChain.bindTerrainAtlas(pass, texture.textureView()));
-        }
+        textures().stream()
+            .filter(texture -> "Sampler0".equals(texture.name()))
+            .findFirst()
+            .ifPresent(texture -> PackChain.bindAtlas(pass, texture.textureView()));
     }
 }

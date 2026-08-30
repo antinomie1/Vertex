@@ -111,6 +111,7 @@ $outputs
             .replace(Regex("""\bgl_FragColor\b"""), "fragColor")
             .let(::modernizeTextureCalls)
             .let(LegacyUniformTranslator::translate)
+            .let(::wrapAlphaTest)
         return """#version 330
 #extension GL_ARB_separate_shader_objects : require
 #include <minecraft:fog.glsl>
@@ -127,6 +128,12 @@ layout(location = 0) in float sphericalVertexDistance;
 layout(location = 1) in float cylindricalVertexDistance;
 layout(location = 2) in float chunkVisibility;
 layout(location = 0) out vec4 fragColor;
+vec4 vertexPackAlphaTest(vec4 value) {
+#ifdef ALPHA_CUTOUT
+    if (value.a < ALPHA_CUTOUT) discard;
+#endif
+    return value;
+}
 """ + body.trimStart() + "\n"
     }
 
@@ -145,8 +152,10 @@ layout(location = 0) out vec4 fragColor;
             .replace(Regex("""\bgl_TextureMatrix\s*\[\s*0\s*]"""), "TextureMat")
             .replace(Regex("""\bgl_TextureMatrix\s*\[\s*[12]\s*]"""), "mat4(1.0)")
             .replace(Regex("""\bgl_MultiTexCoord0\b"""), "vec4(UV0, 0.0, 1.0)")
-            .replace(Regex("""\bgl_MultiTexCoord1\b"""), "vec4(UV1, 0.0, 1.0)")
-            .replace(Regex("""\bgl_MultiTexCoord2\b"""), "vec4(UV2, 0.0, 1.0)")
+            // Legacy entity shaders use texture coordinate set 1 for the
+            // packed lightmap (not the modern overlay attribute UV1).
+            .replace(Regex("""\bgl_MultiTexCoord1\b"""), "vec4(vec2(UV2) / 256.0 + vec2(1.0 / 32.0), 0.0, 1.0)")
+            .replace(Regex("""\bgl_MultiTexCoord2\b"""), "vec4(UV1, 0.0, 1.0)")
             .replace(Regex("""\bgl_Color\b"""), "Color")
             .replace(Regex("""\bgl_Normal\b"""), "Normal")
             .replace(Regex("""\bgl_Vertex\b"""), "vec4(Position, 1.0)")
@@ -246,6 +255,7 @@ $outputs
             .replace(Regex("""\bgl_FragData\s*\[\s*0\s*]"""), "fragColor")
             .replace(Regex("""\bgl_FragColor\b"""), "fragColor")
             .let(LegacyUniformTranslator::translate)
+            .let(::wrapAlphaTest)
         if (dropExtraTargets) body = body.replace(Regex("""\bgl_FragData\s*\[\s*[1-9]\s*]\s*=\s*[^;]+;"""), "")
         else require(!Regex("""gl_FragData\s*\[\s*[1-9]""").containsMatchIn(body)) {
             "dynamic fragment programs must write only render target 0"
@@ -259,6 +269,12 @@ $outputs
 uniform sampler2D Sampler0;
 $lightmap
 layout(location = 0) out vec4 fragColor;
+vec4 vertexPackAlphaTest(vec4 value) {
+#ifdef ALPHA_CUTOUT
+    if (value.a < ALPHA_CUTOUT) discard;
+#endif
+    return value;
+}
         """ + body.trimStart()
     }
 
@@ -471,6 +487,11 @@ layout(std140) uniform ShadowUniforms { mat4 vertexShadowMvp; };
             "#define shadow2D(s, c) vec4(float((c).z <= texture((s), (c).xy).r))\n$modern"
         } else modern
     }
+
+    /** RenderPipeline carries the vanilla cutout threshold as a define. */
+    private fun wrapAlphaTest(source: String): String = source.replace(
+        Regex("""\bfragColor\s*=\s*([^;]+);"""),
+    ) { "fragColor = vertexPackAlphaTest(${it.groupValues[1]});" }
 
     private fun replaceVaryingInputs(source: String, varyings: Map<String, String>, base: Int) =
         source.replace(VARYING) { match ->

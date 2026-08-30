@@ -31,6 +31,17 @@ void main() { gl_FragColor = texture2D(texture, texcoord); }
     }
 
     @Test
+    fun `dynamic lightmap uses packed light UV instead of overlay UV`() {
+        val vertex = LegacyTranslator.dynamicVertex(program.copy(
+            vertexSource = program.vertexSource.replace(
+                "texcoord = gl_MultiTexCoord0.xy",
+                "texcoord = gl_MultiTexCoord1.xy",
+            ),
+        ))
+        assertContains(vertex, "vec2(UV2) / 256.0")
+    }
+
+    @Test
     fun `dynamic stages reject secondary render targets`() {
         val invalid = program.copy(fragmentSource = program.fragmentSource.replace("gl_FragColor", "gl_FragData[1]"))
         assertFailsWith<IllegalArgumentException> { LegacyTranslator.dynamicFragment(invalid) }

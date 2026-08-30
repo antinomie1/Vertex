@@ -60,6 +60,8 @@ object ShadowRenderer {
     private var base: CompiledRenderPipeline? = null
     private var multidraw: CompiledRenderPipeline? = null
     private var active = false
+    private const val SHADOW_SLOTS = 4
+    private const val SHADOW_SLOT_BYTES = 256L
     private var slot = 0
     private var failed = false
     private val logged = AtomicBoolean()
@@ -81,7 +83,7 @@ object ShadowRenderer {
         runCatching { uniformBuffer?.close() }
         listOf(base, multidraw).filterNotNull().distinct().forEach { runCatching { it.close() } }
         depthView = null; depthTexture = null; colorView = null; colorTexture = null; uniformBuffer = null
-        base = null; multidraw = null; active = false; failed = false; discovered = false; requested = emptySet()
+        base = null; multidraw = null; active = false; failed = false; discovered = false; requested = emptySet(); slot = 0
         logged.set(false); cacheLogged.set(false); cache.invalidate()
     }
 
@@ -137,7 +139,8 @@ object ShadowRenderer {
                 colorView = device.createTextureView(colorTexture!!)
             }
             uniformBuffer = device.createBuffer(
-                { "vertex-shadow-matrix" }, GpuBuffer.USAGE_UNIFORM or GpuBuffer.USAGE_COPY_DST, 512L,
+                { "vertex-shadow-matrix" }, GpuBuffer.USAGE_UNIFORM or GpuBuffer.USAGE_COPY_DST,
+                SHADOW_SLOT_BYTES * SHADOW_SLOTS,
             )
             val pack = PackFrontend.loadShadow(root, PackRuntime.options())
             val requirements = pack?.let { dev.vertex.translate.TerrainRequirementScanner.scan(it.vertexSource) }
@@ -169,7 +172,7 @@ object ShadowRenderer {
             updateMatrix(encoder, angle)
             encoder.createRenderPass(descriptor()).use { pass ->
                 RenderSystem.bindDefaultUniforms(pass)
-                pass.setUniform("ShadowUniforms", uniformBuffer!!.slice(slot * 256L, 64L))
+                pass.setUniform("ShadowUniforms", uniformBuffer!!.slice(slot * SHADOW_SLOT_BYTES, 64L))
                 val sampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST)
                 val atlas = Minecraft.getInstance().textureManager.getTexture(TextureAtlas.LOCATION_BLOCKS).textureView
                 active = true
@@ -181,7 +184,7 @@ object ShadowRenderer {
             }
             cache.markRendered(angle, camera.x, camera.z, renderEpoch)
             if (logged.compareAndSet(false, true)) Vertex.log.info("[Vertex] shadow terrain draw verified")
-            slot = slot xor 1
+            slot = (slot + 1) % SHADOW_SLOTS
         } catch (t: Throwable) {
             active = false
             failed = true
@@ -242,7 +245,7 @@ object ShadowRenderer {
         matrix.get(scratch)
         for (value in scratch) staging.putFloat(value)
         staging.flip()
-        encoder.writeToBuffer(uniformBuffer!!.slice(slot * 256L, 64L), staging)
+        encoder.writeToBuffer(uniformBuffer!!.slice(slot * SHADOW_SLOT_BYTES, 64L), staging)
     }
 
     private fun descriptor() = RenderPassDescriptor.builder { "vertex-shadow" }.also { builder ->
@@ -250,8 +253,11 @@ object ShadowRenderer {
         builder.withDepthAttachment(depthView!!, OptionalDouble.of(1.0))
     }.build()
 
-    private fun sunAngle(mc: Minecraft) = mc.gameRenderer.mainCamera().attributeProbe()
-        .getValue(EnvironmentAttributes.SUN_ANGLE, mc.deltaTracker.getGameTimeDeltaPartialTick(true))
+    private fun sunAngle(mc: Minecraft): Float {
+        val degrees = mc.gameRenderer.mainCamera().attributeProbe()
+            .getValue(EnvironmentAttributes.SUN_ANGLE, mc.deltaTracker.getGameTimeDeltaPartialTick(true))
+        return Math.toRadians(degrees.toDouble()).toFloat()
+    }
 
     private fun compile(
         device: GpuDevice,

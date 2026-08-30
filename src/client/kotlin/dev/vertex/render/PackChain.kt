@@ -110,7 +110,10 @@ object PackChain {
     private var pendingProjection: Matrix4f? = null
     private var pendingViewRotation: Matrix4f? = null
     private var pendingFar = 0f
-    private val uniformHeap = UniformHeap(PackUniformCatalog.layout)
+    // Vulkan may keep several submissions in flight; two UBO slots can be
+    // overwritten while an older frame is still sampling them.
+    private const val FRAME_SLOTS = 4
+    private val uniformHeap = UniformHeap(PackUniformCatalog.layout, FRAME_SLOTS)
     private var uniformBuffer: GpuBuffer? = null
     private var uniformSlot = 0
     private var frameCounter = 0
@@ -119,6 +122,7 @@ object PackChain {
     private val previousCamera = FloatArray(3)
     private val previousModelView = Matrix4f()
     private val previousProjection = Matrix4f()
+    private var previousFrameInitialized = false
     private val inverseMatrix = Matrix4f()
     private val projectionMatrix = Matrix4f()
     // Depth textures are inverted below for Vulkan's reverse-Z convention, so the
@@ -131,7 +135,7 @@ object PackChain {
     private var dateSecond = Long.MIN_VALUE
     private var timingPool: GpuQueryPool? = null
     private var timestampPeriod = 1f
-    private val timingArmed = BooleanArray(2)
+    private val timingArmed = BooleanArray(FRAME_SLOTS)
     private val gpuTimes = PerformanceWindow()
     private var timingsSinceReport = 0
     private var perfBaselineWritten = false
@@ -159,6 +163,7 @@ object PackChain {
         depthTextures.fill(null); depthViews.fill(null)
         extraTextures.clear(); extraViews.clear(); staticTextures.clear(); staticBindings.clear(); staticByName.clear(); textureSamplers.clear()
         uniformBuffer = null; timingPool = null; frameReady = false; failed = false
+        previousFrameInitialized = false; uniformSlot = 0; frameCounter = 0; frameTimeCounter = 0f
         frameProjection = null; frameViewRotation = null; frameFar = 0f
         pendingProjection = null; pendingViewRotation = null; pendingFar = 0f
         scaleResolved = false; builtForW = 0; builtForH = 0; w = 0; h = 0
@@ -269,8 +274,8 @@ object PackChain {
             ensureMainSize(device, main.width, main.height)
             ensurePipelines(device)
             val encoder = device.createCommandEncoder()
-            collectGpuTiming(frameCounter and 1)
-            timingPool?.let { encoder.writeTimestamp(it, (frameCounter and 1) * 2) }
+            collectGpuTiming(uniformSlot)
+            timingPool?.let { encoder.writeTimestamp(it, uniformSlot * 2) }
             updateUniforms(encoder)
             for ((id, pair) in extraTextures) colorClears[id]?.let { color ->
                 for (texture in pair) encoder.clearColorTexture(texture, color)
@@ -359,6 +364,12 @@ object PackChain {
 
     @JvmStatic
     fun bindTerrainAtlas(pass: RenderPass, atlas: GpuTextureView) {
+        bindAtlas(pass, atlas)
+    }
+
+    /** Minecraft's atlas is a point-sampled pixel-art texture. */
+    @JvmStatic
+    fun bindAtlas(pass: RenderPass, atlas: GpuTextureView) {
         if (!PackRuntime.isEnabled()) return
         pass.setUniform("Sampler0", atlas, RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST))
     }
@@ -376,7 +387,7 @@ object PackChain {
     @JvmStatic
     fun bindDynamicSamplers(pass: RenderPass) {
         if (!PackRuntime.isEnabled()) return
-        val scene = Minecraft.getInstance().gameRenderer.mainRenderTarget().colorTextureView ?: return
+        val scene = Minecraft.getInstance().gameRenderer.mainRenderTarget().colorTextureView
         val sampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR)
         fun bind(name: String, view: GpuTextureView?) {
             if (view == null) return
@@ -596,16 +607,16 @@ object PackChain {
         if (programs.any { it.uniforms.isNotEmpty() } && uniformBuffer == null) {
             uniformBuffer = device.createBuffer(
                 { "vertex-pack-uniforms" }, GpuBuffer.USAGE_UNIFORM or GpuBuffer.USAGE_COPY_DST,
-                uniformHeap.layout.segmentBytes.toLong() * 2L,
+                uniformHeap.layout.segmentBytes.toLong() * FRAME_SLOTS,
             )
-            dev.vertex.Vertex.log.info("[Vertex] uniform heap armed: {} used members, {} bytes x2 slots",
-                programs.flatMap { it.uniforms }.distinct().size, uniformHeap.layout.segmentBytes)
+            dev.vertex.Vertex.log.info("[Vertex] uniform heap armed: {} used members, {} bytes x{} slots",
+                programs.flatMap { it.uniforms }.distinct().size, uniformHeap.layout.segmentBytes, FRAME_SLOTS)
         }
         if (dedicatedColor0() && sceneToColor0 == null) sceneToColor0 = compile(
             device, source, id("pack/post.v"), id("pack/blit.f"), BindGroupLayouts.IN_SAMPLER, listOf(colorFormats[0]),
         )
         if (timingPool == null) runCatching {
-            timingPool = device.createTimestampQueryPool(4)
+            timingPool = device.createTimestampQueryPool(FRAME_SLOTS * 2)
             timestampPeriod = device.deviceInfo.timestampPeriod()
         }.onFailure { dev.vertex.Vertex.log.warn("[Vertex] GPU timestamps unavailable", it) }
 
@@ -700,7 +711,7 @@ object PackChain {
 
     private fun updateUniforms(encoder: CommandEncoder) {
         if (uniformBuffer == null) return
-        uniformSlot = frameCounter and 1
+        uniformSlot = frameCounter % FRAME_SLOTS
         val now = System.nanoTime()
         val frameTime = ((now - lastFrameNanos) / 1_000_000_000f).coerceIn(0f, 1f)
         lastFrameNanos = now
@@ -711,7 +722,10 @@ object PackChain {
         val partialTick = mc.deltaTracker.getGameTimeDeltaPartialTick(true)
         val day = Math.floorMod(clock, 24000L).toInt()
         val probe = mc.gameRenderer.mainCamera().attributeProbe()
-        val angle = probe.getValue(EnvironmentAttributes.SUN_ANGLE, partialTick)
+        // EnvironmentAttributes.SUN_ANGLE is degrees; legacy shader packs use
+        // a normalized turn for sunAngle and radians for vector math.
+        val angleDegrees = probe.getValue(EnvironmentAttributes.SUN_ANGLE, partialTick)
+        val angle = (angleDegrees / 360f).let { (it % 1f + 1f) % 1f }
         val uploadedProjection = ((mc.gameRenderer as GameRendererProjectionAccessor).`vertex$getLevelProjectionMatrixBuffer`()
             as ProjectionMatrixBufferAccessor).`vertex$getLastUploadedProjection`()
         val projection = frameProjection ?: uploadedProjection?.getMatrix(Matrix4f())
@@ -725,7 +739,7 @@ object PackChain {
         uniformHeap.putFloat(uniformSlot, "frameTime", frameTime)
         uniformHeap.putFloat(uniformSlot, "frameTimeCounter", frameTimeCounter)
         uniformHeap.putFloat(uniformSlot, "eyeAltitude", camera.y.toFloat())
-        val timeAngle = angle / (Math.PI * 2.0).toFloat()
+        val timeAngle = angle
         uniformHeap.putFloat(uniformSlot, "sunAngle", timeAngle)
         uniformHeap.putFloat(uniformSlot, "shadowAngle", timeAngle)
         uniformHeap.putFloat(uniformSlot, "timeAngle", day / 24000f)
@@ -745,6 +759,8 @@ object PackChain {
         uniformHeap.putFloat(uniformSlot, "fogEnd", probe.getValue(EnvironmentAttributes.FOG_END_DISTANCE, partialTick))
         uniformHeap.putFloat(uniformSlot, "cloudHeight", probe.getValue(EnvironmentAttributes.CLOUD_HEIGHT, partialTick))
         uniformHeap.putInt(uniformSlot, "frameCounter", frameCounter)
+        uniformHeap.putFloat(uniformSlot, "framemod2", (frameCounter and 1).toFloat())
+        uniformHeap.putFloat(uniformSlot, "framemod8", (frameCounter and 7).toFloat())
         uniformHeap.putInt(uniformSlot, "worldTime", day)
         uniformHeap.putInt(uniformSlot, "worldDay", (clock / 24000L).toInt())
         uniformHeap.putInt(uniformSlot, "moonPhase", Math.floorMod(clock / 24000L, 8L).toInt())
@@ -761,6 +777,9 @@ object PackChain {
         uniformHeap.putInt(uniformSlot, "blockEntityId", -1)
         uniformHeap.putInt(uniformSlot, "currentRenderedItemId", -1)
         uniformHeap.putVec3(uniformSlot, "cameraPosition", camera.x.toFloat(), camera.y.toFloat(), camera.z.toFloat())
+        if (!previousFrameInitialized) {
+            previousCamera[0] = camera.x.toFloat(); previousCamera[1] = camera.y.toFloat(); previousCamera[2] = camera.z.toFloat()
+        }
         uniformHeap.putVec3(uniformSlot, "previousCameraPosition", previousCamera[0], previousCamera[1], previousCamera[2])
         val previousX = previousCamera[0]; val previousY = previousCamera[1]; val previousZ = previousCamera[2]
         previousCamera[0] = camera.x.toFloat(); previousCamera[1] = camera.y.toFloat(); previousCamera[2] = camera.z.toFloat()
@@ -786,13 +805,15 @@ object PackChain {
         uniformHeap.putIVec3(uniformSlot, "currentDate", dateScratch[0], dateScratch[1], dateScratch[2])
         uniformHeap.putIVec3(uniformSlot, "currentTime", dateScratch[3], dateScratch[4], dateScratch[5])
         uniformHeap.putIVec2(uniformSlot, "currentYearTime", dateScratch[6], dateScratch[7])
-        uniformHeap.putVec3(uniformSlot, "sunPosition", cos(angle) * 100f, sin(angle) * 100f, 0f)
-        uniformHeap.putVec3(uniformSlot, "shadowLightPosition", cos(angle) * 100f, sin(angle) * 100f, 35f)
-        uniformHeap.putVec3(uniformSlot, "moonPosition", -cos(angle) * 100f, -sin(angle) * 100f, 0f)
+        val angleRadians = Math.toRadians(angleDegrees.toDouble()).toFloat()
+        uniformHeap.putVec3(uniformSlot, "sunPosition", cos(angleRadians) * 100f, sin(angleRadians) * 100f, 0f)
+        uniformHeap.putVec3(uniformSlot, "shadowLightPosition", cos(angleRadians) * 100f, sin(angleRadians) * 100f, 35f)
+        uniformHeap.putVec3(uniformSlot, "moonPosition", -cos(angleRadians) * 100f, -sin(angleRadians) * 100f, 0f)
         uniformHeap.putVec3(uniformSlot, "upPosition", 0f, 100f, 0f)
         uniformHeap.putIVec2(uniformSlot, "eyeBrightness", 240, 240)
         uniformHeap.putIVec2(uniformSlot, "eyeBrightnessSmooth", 240, 240)
         val modelView = frameViewRotation ?: mc.gameRenderer.mainCamera().getViewRotationMatrix(Matrix4f())
+        if (!previousFrameInitialized) previousModelView.set(modelView)
         putMatrix("gbufferModelView", modelView)
         putMatrix("gbufferModelViewInverse", inverseMatrix.set(modelView).invert())
         putMatrix("gbufferPreviousModelView", previousModelView)
@@ -804,6 +825,7 @@ object PackChain {
             // row once so both the inverse projection and sampled depth agree.
             vulkanToLegacyClip.mul(projectionMatrix, projectionMatrix)
         }
+        if (!previousFrameInitialized) previousProjection.set(projectionMatrix)
         putMatrix("gbufferProjection", projectionMatrix)
         putMatrix("gbufferProjectionInverse", inverseMatrix.set(projectionMatrix).invert())
         putMatrix("gbufferPreviousProjection", previousProjection)
@@ -814,6 +836,7 @@ object PackChain {
             uniformBuffer!!.slice(uniformHeap.segmentOffset(uniformSlot).toLong(), uniformHeap.layout.segmentBytes.toLong()),
             uniformHeap.view(uniformSlot),
         )
+        previousFrameInitialized = true
         frameCounter++
     }
 

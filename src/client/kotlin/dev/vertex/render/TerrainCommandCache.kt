@@ -89,9 +89,17 @@ object TerrainCommandCache {
         override fun popDebugGroup() = emit(RenderPass::popDebugGroup)
         override fun writeTimestamp(pool: GpuQueryPool, query: Int) = emit { it.writeTimestamp(pool, query) }
         override fun setPipeline(pipeline: CompiledRenderPipeline) = emit { it.setPipeline(pipeline) }
-        override fun setUniform(name: String, view: GpuTextureView?, sampler: GpuSampler?) = emit { it.setUniform(name, view, sampler) }
+        override fun setUniform(name: String, view: GpuTextureView?, sampler: GpuSampler?) = emit {
+            if (name == "Sampler0" && view != null) PackChain.bindAtlas(it, view)
+            else it.setUniform(name, view, sampler)
+        }
         override fun setUniform(name: String, buffer: GpuBuffer) = emit { it.setUniform(name, buffer) }
-        override fun setUniform(name: String, buffer: GpuBufferSlice) = emit { it.setUniform(name, buffer) }
+        override fun setUniform(name: String, buffer: GpuBufferSlice) = emit {
+            // The cached command bundle can outlive a frame. Rebind the rotating
+            // pack UBO at replay time so movement never samples a stale slot.
+            if (name == "VertexPackUniforms") PackChain.bindUniforms(it)
+            else it.setUniform(name, buffer)
+        }
         override fun pushConstants(data: ByteBuffer) { val copy = data.copy(); emit { copy.rewind(); it.pushConstants(copy) } }
         override fun enableScissor(x: Int, y: Int, width: Int, height: Int) = emit { it.enableScissor(x, y, width, height) }
         override fun disableScissor() = emit(RenderPass::disableScissor)
