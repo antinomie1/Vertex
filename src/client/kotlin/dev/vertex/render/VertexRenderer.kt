@@ -4,6 +4,7 @@ import com.mojang.blaze3d.systems.RenderSystem
 import dev.vertex.Vertex
 import dev.vertex.core.SharedVulkanContext
 import dev.vertex.core.RuntimeDiagnostics
+import dev.vertex.frontend.PackRuntime
 import dev.vertex.runtime.ProgramFamily
 import dev.vertex.runtime.RenderTier
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents
@@ -19,18 +20,21 @@ object VertexRenderer {
         Vertex.log.info("[Vertex] register(): wiring seams")
         LevelRenderEvents.END_MAIN.register { _ ->
             try {
-                ensureBoot()
-                if (SharedVulkanContext.attach().tier(ProgramFamily.SCREEN_CHAIN) != RenderTier.TIER_0) {
-                    PackChain.captureDepth(2)
-                    PackChain.draw()
-                }
                 frames++
                 val stopAfter = System.getProperty("vertex.autostop")?.toLongOrNull()
                 if (stopAfter != null && frames >= stopAfter * 60L) {
                     Vertex.log.info("[Vertex] autotest complete -> clean shutdown")
                     Minecraft.getInstance().stop()
+                    return@register
                 }
-                if (frames % 600L == 0L) {
+                if (PackRuntime.isEnabled()) {
+                    ensureBoot()
+                }
+                if (PackRuntime.isEnabled() && SharedVulkanContext.attach().tier(ProgramFamily.SCREEN_CHAIN) != RenderTier.TIER_0) {
+                    PackChain.captureDepth(2)
+                    PackChain.draw()
+                }
+                if (PackRuntime.isEnabled() && frames % 600L == 0L) {
                     Vertex.log.info("[Vertex] alive(level): frame {} on '{}'", frames, SharedVulkanContext.attach().gpuName)
                 }
             } catch (t: Throwable) {

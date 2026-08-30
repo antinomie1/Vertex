@@ -9,6 +9,7 @@ class ShaderPreprocessor(
 ) {
     private val roots = roots.map { it.toAbsolutePath().normalize() }
     private val options = defines.toMap()
+    private val optionNames = defines.keys
     private val symbols = defines.toMutableMap()
     private val objectMacros = defines.toMutableMap()
 
@@ -26,7 +27,16 @@ class ShaderPreprocessor(
             val line = index + 1
             val directive = DIRECTIVE.matchEntire(raw)?.destructured
             if (directive == null) {
-                output.appendLine(if (active.all { it.enabled }) expandOptions(raw) else "")
+                val commentedDefine = COMMENTED_DEFINE.matchEntire(raw)
+                if (commentedDefine != null && active.all { it.enabled }) {
+                    val name = commentedDefine.groupValues[1]
+                    val override = options[name]
+                    if (override != null && !override.equals("false", ignoreCase = true)) {
+                        symbols[name] = override
+                        objectMacros[name] = override
+                        output.appendLine("#define $name $override")
+                    } else output.appendLine()
+                } else output.appendLine(if (active.all { it.enabled }) expandOptions(raw) else "")
                 return@forEachIndexed
             }
             val (name, tailValue) = directive
@@ -35,15 +45,15 @@ class ShaderPreprocessor(
                 "if", "ifdef", "ifndef" -> {
                     val parent = active.all { it.enabled }
                     val condition = when (name) {
-                        "ifdef" -> tail in symbols
-                        "ifndef" -> tail !in symbols
-                        else -> Expression(tail, symbols).evaluate()
+                        "ifdef" -> isDefined(tail)
+                        "ifndef" -> !isDefined(tail)
+                        else -> Expression(tail, symbols, ::isDefined).evaluate()
                     }
                     active.addLast(Conditional(parent, parent && condition, condition))
                     output.appendLine()
                 }
                 "elif" -> active.replaceLast(file, line) { current ->
-                    val condition = !current.branchTaken && Expression(tail, symbols).evaluate()
+                    val condition = !current.branchTaken && Expression(tail, symbols, ::isDefined).evaluate()
                     current.copy(enabled = current.parentEnabled && condition, branchTaken = current.branchTaken || condition)
                 }.also { output.appendLine() }
                 "else" -> active.replaceLast(file, line) { current ->
@@ -67,13 +77,14 @@ class ShaderPreprocessor(
                         val functionLike = definition.groupValues[2].isNotEmpty()
                         // Do not substitute inline documentation into statements: once the
                         // comment is stripped it would also swallow the statement terminator.
-                        val value = if (functionLike) "1" else definition.groupValues[3]
+                        val defaultValue = if (functionLike) "1" else definition.groupValues[3]
                             .substringBefore("//")
                             .trim()
                             .ifBlank { "1" }
+                        val value = if (!functionLike) options[name] ?: defaultValue else defaultValue
                         symbols[name] = value
                         if (functionLike) objectMacros.remove(name) else objectMacros[name] = value
-                        output.appendLine(raw)
+                        output.appendLine(if (!functionLike && name in options) "#define $name $value" else raw)
                     }
                     "undef" -> { symbols.remove(tail); objectMacros.remove(tail); output.appendLine(raw) }
                     else -> output.appendLine(raw)
@@ -101,6 +112,9 @@ class ShaderPreprocessor(
     private fun expandOptions(line: String): String = IDENT.replace(line) {
         options[it.value] ?: objectMacros[it.value] ?: it.value
     }
+
+    private fun isDefined(name: String): Boolean = name in symbols &&
+        (name !in optionNames || symbols[name]?.equals("false", ignoreCase = true) != true)
 
     private fun stripComments(source: String): String {
         val out = StringBuilder(source.length)
@@ -140,6 +154,7 @@ class ShaderPreprocessor(
         private val DIRECTIVE = Regex("""\s*#\s*(\w+)\b(.*)""")
         private val INCLUDE = Regex("""[<\"]([^>\"]+)[>\"]""")
         private val DEFINE = Regex("""([A-Za-z_]\w*)(\([^)]*\))?(?:\s+(.*))?""")
+        private val COMMENTED_DEFINE = Regex("""\s*//\s*#\s*define\s+([A-Za-z_]\w*)\b.*""")
         private val IDENT = Regex("""\b[A-Za-z_]\w*\b""")
         private val DIRECTIVE_COMMENT = Regex("""\s*(?:DRAWBUFFERS|RENDERTARGETS)\s*:""")
     }
@@ -150,7 +165,11 @@ private inline fun <T> ArrayDeque<T>.replaceLast(file: Path, line: Int, transfor
     addLast(transform(removeLast()))
 }
 
-private class Expression(source: String, private val symbols: Map<String, String>) {
+private class Expression(
+    source: String,
+    private val symbols: Map<String, String>,
+    private val isDefined: (String) -> Boolean,
+) {
     private val tokens = Regex("defined|[A-Za-z_]\\w*|0[xX][0-9a-fA-F]+|\\d+|&&|\\|\\||==|!=|<=|>=|[()!<>-]")
         .findAll(source).map { it.value }.toList()
     private var at = 0
@@ -178,7 +197,7 @@ private class Expression(source: String, private val symbols: Map<String, String
         take("!") -> bool(unary() == 0L)
         take("-") -> -unary()
         take("defined") -> {
-            val wrapped = take("("); val name = next(); if (wrapped) require(take(")")); bool(name in symbols)
+            val wrapped = take("("); val name = next(); if (wrapped) require(take(")")); bool(isDefined(name))
         }
         take("(") -> or().also { require(take(")")) }
         else -> value(next())

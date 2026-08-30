@@ -10,6 +10,7 @@ import java.util.Properties
 object PackRuntime {
     private var root: Path? = null
     private var archive: FileSystem? = null
+    private var configFile: Path? = null
     @Volatile private var enabled = true
 
     data class Settings(
@@ -26,6 +27,7 @@ object PackRuntime {
 
     @Synchronized
     fun initialize(gameDir: Path) {
+        configFile = gameDir.resolve("config/vertex-shaders.properties")
         val current = settings(gameDir)
         enabled = current.enabled
         if (System.getProperty("vertex.renderScale") == null)
@@ -53,9 +55,15 @@ object PackRuntime {
 
     @Synchronized
     fun apply(gameDir: Path, settings: Settings) {
+        configFile = gameDir.resolve("config/vertex-shaders.properties")
+        val optionString = System.getProperty("vertex.options")
+            ?: options().asSequence().sortedBy { it.key }.joinToString(",") { "${it.key}=${it.value}" }
         enabled = settings.enabled
-        if (settings.pack == null) System.clearProperty("vertex.pack")
-        else System.setProperty("vertex.pack", settings.pack)
+        // OFF is a real vanilla mode: do not leave a stale pack path around for
+        // the next launch or for any late resource lookup.
+        val pack = settings.pack.takeIf { settings.enabled }
+        if (pack == null) System.clearProperty("vertex.pack")
+        else System.setProperty("vertex.pack", pack)
         System.setProperty("vertex.shadersEnabled", settings.enabled.toString())
         System.setProperty("vertex.renderScale", settings.renderScale.toString())
         System.setProperty("vertex.shadowResolution", settings.shadowResolution.toString())
@@ -63,7 +71,8 @@ object PackRuntime {
         file.parent?.let(Files::createDirectories)
         Properties().also {
             it["enabled"] = settings.enabled.toString()
-            settings.pack?.let { pack -> it["pack"] = pack }
+            pack?.let { value -> it["pack"] = value }
+            if (optionString.isNotBlank()) it["options"] = optionString
             it["renderScale"] = settings.renderScale.toString()
             it["shadowResolution"] = settings.shadowResolution.toString()
             Files.newOutputStream(file).use { output -> it.store(output, "Vertex shader settings") }
@@ -71,12 +80,33 @@ object PackRuntime {
         close()
     }
 
-    fun options(): Map<String, String> = System.getProperty("vertex.options")
+    fun options(): Map<String, String> = (System.getProperty("vertex.options")
+        ?: runCatching {
+            val file = configFile ?: return@runCatching null
+            if (Files.isRegularFile(file)) Properties().also { Files.newInputStream(file).use(it::load) }
+                .getProperty("options") else null
+        }.getOrNull())
         ?.split(',')
         ?.mapNotNull { entry ->
             val (key, value) = entry.split('=', limit = 2).takeIf { it.size == 2 } ?: return@mapNotNull null
             key.trim().takeIf(String::isNotEmpty)?.let { it to value.trim() }
         }?.toMap().orEmpty()
+
+    @Synchronized
+    fun applyOptions(gameDir: Path, values: Map<String, String>) {
+        val encoded = values.asSequence()
+            .filter { it.key.isNotBlank() && it.value.isNotBlank() }
+            .sortedBy { it.key }
+            .joinToString(",") { "${it.key}=${it.value}" }
+        if (encoded.isBlank()) System.clearProperty("vertex.options")
+        else System.setProperty("vertex.options", encoded)
+        val file = gameDir.resolve("config/vertex-shaders.properties")
+        file.parent?.let(Files::createDirectories)
+        val props = Properties()
+        if (Files.isRegularFile(file)) Files.newInputStream(file).use(props::load)
+        if (encoded.isBlank()) props.remove("options") else props["options"] = encoded
+        Files.newOutputStream(file).use { props.store(it, "Vertex shader settings") }
+    }
 
     @Synchronized
     fun close() {
@@ -98,7 +128,6 @@ object PackRuntime {
         }
         return findPackRoot(candidate)
     }
-
     private fun findPackRoot(candidate: Path): Path {
         if (Files.isDirectory(candidate.resolve("shaders"))) return candidate
         Files.list(candidate).use { children ->

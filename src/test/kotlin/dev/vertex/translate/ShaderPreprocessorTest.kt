@@ -49,6 +49,25 @@ class ShaderPreprocessorTest {
     }
 
     @Test
+    fun `overrides active and commented shader settings`() {
+        val root = Files.createTempDirectory("vertex-preprocessor-settings")
+        root.resolve("settings.glsl").writeText(
+            "#define AO\n//#define CLOUDS\n#define CLOUD_MODE 2 //[1 2]\n" +
+                "#ifdef AO\nfloat ambient = 1.0;\n#else\nfloat ambient = 0.0;\n#endif\n" +
+                "#ifdef CLOUDS\nfloat clouds = 1.0;\n#endif\n",
+        )
+        val source = root.resolve("main.glsl")
+        source.writeText("#include \"settings.glsl\"\nfloat mode = CLOUD_MODE;\n")
+        val output = ShaderPreprocessor(
+            listOf(root),
+            mapOf("AO" to "false", "CLOUDS" to "true", "CLOUD_MODE" to "1"),
+        ).process(source)
+        assertContains(output, "float ambient = 0.0;")
+        assertContains(output, "float clouds = 1.0;")
+        assertContains(output, "#define CLOUD_MODE 1")
+    }
+
+    @Test
     fun `evaluates negative numeric conditionals`() {
         val root = Files.createTempDirectory("vertex-preprocessor-negative")
         val source = root.resolve("main.glsl")
