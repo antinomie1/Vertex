@@ -37,7 +37,7 @@ object LegacyTranslator {
             .replace(Regex("""\bgl_MultiTexCoord0\b"""), "vec4(UV0, 0.0, 1.0)")
             .replace(Regex("""\bgl_MultiTexCoord1\b"""), "vec4(vec2(UV2) / 256.0 + vec2(1.0 / 32.0), 0.0, 1.0)")
             .replace(Regex("""\bgl_MultiTexCoord2\b"""), "vec4(UV0, 0.0, 1.0)")
-            .replace(Regex("""\bgl_Color\b"""), "(${if (separateAo) "Color2" else "Color"} * sample_lightmap(Sampler2, UV2))")
+            .replace(Regex("""\bgl_Color\b"""), if (separateAo) "Color" else "(Color * sample_lightmap(Sampler2, UV2))")
             .replace(Regex("""\bgl_Normal\b"""), "Normal")
             .replace(Regex("""\bgl_Vertex\b"""), "vec4(pos, 1.0)")
             .replace(Regex("""\bftransform\s*\(\s*\)"""), "(ProjMat * ModelViewMat * vec4(pos, 1.0))")
@@ -60,7 +60,7 @@ object LegacyTranslator {
     #endif
 """)
         val outputs = varyings.entries.mapIndexed { index, (name, type) ->
-            "layout(location = ${if (separateAo) 4 + index else 3 + index}) out $type $name;"
+            "layout(location = ${3 + index}) out $type $name;"
         }.joinToString("\n")
         return """#version 330
 #extension GL_ARB_separate_shader_objects : require
@@ -76,18 +76,17 @@ object LegacyTranslator {
 
 layout(location = 0) in vec3 Position;
 layout(location = 1) in vec4 Color;
-${if (separateAo) "layout(location = 2) in vec4 Color2;" else ""}
-layout(location = ${if (separateAo) 3 else 2}) in vec2 UV0;
-layout(location = ${if (separateAo) 4 else 3}) in ivec2 UV1;
-layout(location = ${if (separateAo) 5 else 4}) in ivec2 UV2;
+layout(location = 2) in vec2 UV0;
+layout(location = 3) in ivec2 UV1;
+layout(location = 4) in ivec2 UV2;
 #ifdef MULTIDRAW_TERRAIN
-layout(location = ${if (separateAo) 6 else 5}) in ivec3 ChunkPosition;
-layout(location = ${if (separateAo) 7 else 6}) in float ChunkVisibility;
-layout(location = ${if (separateAo) (if (requirements.midTexCoord) 9 else 8) else (if (requirements.midTexCoord) 8 else 7)}) in vec3 Normal;
+layout(location = 5) in ivec3 ChunkPosition;
+layout(location = 6) in float ChunkVisibility;
+layout(location = ${if (requirements.midTexCoord) 8 else 7}) in vec3 Normal;
 #else
-layout(location = ${if (separateAo) (if (requirements.midTexCoord) 7 else 6) else (if (requirements.midTexCoord) 6 else 5)}) in vec3 Normal;
+layout(location = ${if (requirements.midTexCoord) 6 else 5}) in vec3 Normal;
 #endif
-${if (requirements.midTexCoord) "#ifdef MULTIDRAW_TERRAIN\nlayout(location = ${if (separateAo) 8 else 7}) in vec2 UV3;\n#else\nlayout(location = ${if (separateAo) 6 else 5}) in vec2 UV3;\n#endif" else ""}
+${if (requirements.midTexCoord) "#ifdef MULTIDRAW_TERRAIN\nlayout(location = 7) in vec2 UV3;\n#else\nlayout(location = 5) in vec2 UV3;\n#endif" else ""}
 uniform sampler2D Sampler2;
 layout(location = 0) out float sphericalVertexDistance;
 layout(location = 1) out float cylindricalVertexDistance;
@@ -104,7 +103,7 @@ $outputs
             .replace(Regex("""^#version\s+\d+[^\n]*""", RegexOption.MULTILINE), "")
             .replace(Regex("""^#extension[^\n]*""", RegexOption.MULTILINE), "")
             .replace(Regex("""uniform\s+[iu]?sampler\w*\s+(?:tex|texture|gtexture|lightmap|noisetex)\s*;"""), "")
-            .let { replaceVaryingInputs(it, varyings, if (separateAo) 4 else 3) }
+            .let { replaceVaryingInputs(it, varyings, 3) }
             .replace(Regex("""texture2D\s*\("""), "texture(")
             .replace(Regex("""\b(?:tex|texture|gtexture)\b(?!\s*\()"""), "Sampler0")
             .replace(Regex("""\blightmap\b"""), "Sampler2")
@@ -401,10 +400,10 @@ $outputs
         val main = Regex("""void\s+main\s*\(\s*\)\s*\{""").find(body)
             ?: error("${program.name}: shadow vertex shader has no main()")
         body = body.replaceRange(main.range, main.value + "\n    vec3 pos = Position + (ChunkPosition - CameraBlockPos) + CameraOffset;")
-        val uv0 = if (separateAo) 3 else 2
+        val uv0 = 2
         val uv1 = uv0 + 1
         val uv2 = uv0 + 2
-        val chunk = if (separateAo) 6 else 5
+        val chunk = 5
         val visibility = chunk + 1
         val midBase = uv2 + 1
         val midMulti = visibility + 1
@@ -445,7 +444,6 @@ layout(location = 0) out vec4 shadowColor;
 #endif
 layout(location=0) in vec3 Position;
 layout(location=1) in vec4 Color;
-${if (separateAo) "layout(location=2) in vec4 Color2;" else ""}
 layout(location=$uv0) in vec2 UV0;
 layout(location=$uv1) in ivec2 UV1;
 layout(location=$uv2) in ivec2 UV2;

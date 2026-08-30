@@ -68,6 +68,7 @@ object ShadowRenderer {
     private val matrix = Matrix4f()
     private val modelView = Matrix4f()
     private val projection = Matrix4f()
+    private val rasterProjection = Matrix4f()
     private val inverseModelView = Matrix4f()
     private val inverseProjection = Matrix4f()
     private val scratch = FloatArray(16)
@@ -119,8 +120,8 @@ object ShadowRenderer {
             val mc = Minecraft.getInstance()
             val root = PackRuntime.root(mc.gameDirectory.toPath())
             val device = RenderSystem.getDevice()
-            // Shadow pipelines consume the same widened terrain buffer as the main
-            // terrain path; prepare it first so Color2/UV3 are part of the ABI.
+            // Shadow pipelines consume the same terrain buffer contract as the main
+            // terrain path; prepare it once so both draw paths share the ABI.
             TerrainMesh.prepare()
             depthTexture = device.createTexture(
                 { "vertex-shadow-depth" }, GpuTexture.USAGE_TEXTURE_BINDING or GpuTexture.USAGE_RENDER_ATTACHMENT,
@@ -224,11 +225,18 @@ object ShadowRenderer {
         val y = sin(angle) * range
         val upY = if (abs(y) > range * 0.95f) 0f else 1f
         val upZ = if (abs(y) > range * 0.95f) 1f else 0f
+        // Pack-facing shadowProjection stays in legacy OpenGL NDC because BSL's
+        // projMAD/DistortShadow expects [-1, 1]. Rasterization on Vulkan uses
+        // [0, 1] depth, so only the MVP written to the shadow pass is converted.
         projection.setOrtho(-range, range, -range, range, -range * 2f, range * 2f)
+        rasterProjection.setOrtho(
+            -range, range, -range, range, -range * 2f, range * 2f,
+            RenderSystem.getDevice().getDeviceInfo().isZZeroToOne(),
+        )
         modelView.identity().lookAt(x, y, range * 0.35f, 0f, 0f, 0f, 0f, upY, upZ)
         inverseProjection.set(projection).invert()
         inverseModelView.set(modelView).invert()
-        matrix.set(projection).mul(modelView)
+        matrix.set(rasterProjection).mul(modelView)
         staging.clear()
         matrix.get(scratch)
         for (value in scratch) staging.putFloat(value)

@@ -46,6 +46,7 @@ import dev.vertex.translate.PackUniformCatalog
 import net.minecraft.client.Minecraft
 import net.minecraft.client.renderer.BindGroupLayouts
 import net.minecraft.client.renderer.RenderPipelines
+import net.minecraft.client.renderer.state.level.CameraRenderState
 import net.minecraft.resources.Identifier
 import net.minecraft.util.ARGB
 import net.minecraft.world.attribute.EnvironmentAttributes
@@ -85,6 +86,7 @@ object PackChain {
     private var builtForW = 0
     private var builtForH = 0
     private var failed = false
+    private var volumetricClouds = false
     private var dbgFrame = 0L
     private var needsNormals = false
     private var neededDepths = emptySet<Int>()
@@ -102,6 +104,12 @@ object PackChain {
     private var staticBytes = 0L
     private val banks = RenderTargetBanks()
     private var frameReady = false
+    private var frameProjection: Matrix4f? = null
+    private var frameViewRotation: Matrix4f? = null
+    private var frameFar = 0f
+    private var pendingProjection: Matrix4f? = null
+    private var pendingViewRotation: Matrix4f? = null
+    private var pendingFar = 0f
     private val uniformHeap = UniformHeap(PackUniformCatalog.layout)
     private var uniformBuffer: GpuBuffer? = null
     private var uniformSlot = 0
@@ -113,6 +121,10 @@ object PackChain {
     private val previousProjection = Matrix4f()
     private val inverseMatrix = Matrix4f()
     private val projectionMatrix = Matrix4f()
+    // Depth textures are inverted below for Vulkan's reverse-Z convention, so the
+    // reconstructed clip-space Z must be inverted as well (near=-1, far=+1).
+    private val vulkanToLegacyClip = Matrix4f().identity().m22(-2f).m32(1f)
+    private val reverseDepth = DepthStencilState.DEFAULT.depthTest() == CompareOp.GREATER_THAN_OR_EQUAL
     private val matrixScratch = FloatArray(16)
     private val normalScratch = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
     private val dateScratch = IntArray(8)
@@ -147,7 +159,10 @@ object PackChain {
         depthTextures.fill(null); depthViews.fill(null)
         extraTextures.clear(); extraViews.clear(); staticTextures.clear(); staticBindings.clear(); staticByName.clear(); textureSamplers.clear()
         uniformBuffer = null; timingPool = null; frameReady = false; failed = false
+        frameProjection = null; frameViewRotation = null; frameFar = 0f
+        pendingProjection = null; pendingViewRotation = null; pendingFar = 0f
         scaleResolved = false; builtForW = 0; builtForH = 0; w = 0; h = 0
+        volumetricClouds = false
         targetBytes = 0; staticBytes = 0; needsNormals = false; neededDepths = emptySet(); activeColors = emptySet()
         timingArmed.fill(false); timingsSinceReport = 0; perfBaselineWritten = false; dateSecond = Long.MIN_VALUE
     }
@@ -222,8 +237,31 @@ object PackChain {
     }
 
     @JvmStatic
-    fun beginFrame() {
+    fun beginFrame() = beginFrame(null)
+
+    @JvmStatic
+    fun setFrameCamera(camera: CameraRenderState) {
+        if (!camera.projectionMatrix.m00().isFinite()) return
+        pendingProjection = Matrix4f(camera.projectionMatrix)
+        pendingViewRotation = Matrix4f(camera.viewRotationMatrix)
+        pendingFar = camera.depthFar.takeIf { it.isFinite() && it > 0f } ?: 0f
+    }
+
+    @JvmStatic
+    fun beginFrame(camera: CameraRenderState?) {
         if (!enabled() || frameReady) return
+        if (camera != null) {
+            frameProjection = Matrix4f(camera.projectionMatrix)
+            frameViewRotation = Matrix4f(camera.viewRotationMatrix)
+            frameFar = camera.depthFar.takeIf { it.isFinite() && it > 0f } ?: 0f
+        } else {
+            pendingProjection?.let { frameProjection = it }
+            pendingViewRotation?.let { frameViewRotation = it }
+            if (pendingFar > 0f) frameFar = pendingFar
+            pendingProjection = null
+            pendingViewRotation = null
+            pendingFar = 0f
+        }
         try {
             val device = RenderSystem.getDevice()
             val main = Minecraft.getInstance().gameRenderer.mainRenderTarget()
@@ -290,6 +328,9 @@ object PackChain {
 
     @JvmStatic
     fun needsDepth(id: Int) = id in neededDepths
+
+    @JvmStatic
+    fun usesVolumetricClouds() = volumetricClouds
 
     /** Binds the current frame's pack uniforms to game-owned render passes. */
     @JvmStatic
@@ -376,7 +417,7 @@ object PackChain {
     }
 
     private fun captureDepth(encoder: CommandEncoder, source: GpuTexture, sourceView: GpuTextureView, id: Int) {
-        if (renderScale == 1f) {
+        if (renderScale == 1f && !reverseDepth) {
             encoder.copyTextureToTexture(source, depthTextures[id]!!, 0, 0, 0, 0, 0, w, h)
             return
         }
@@ -454,6 +495,8 @@ object PackChain {
         val programs = loadedPrograms.filterNot {
             ScreenPassOptimizer.isIdentityCopy(it.fragmentSource, it.outputs, it.samplers)
         }
+        volumetricClouds = programs.any { it.name == "deferred1" && it.fragmentSource.contains("DrawCloudVolumetric") }
+        if (volumetricClouds) dev.vertex.Vertex.log.info("[Vertex] volumetric cloud pass detected")
         if (programs.size != loadedPrograms.size) dev.vertex.Vertex.log.info(
             "[Vertex] eliminated {} identity screen-pass boundaries", loadedPrograms.size - programs.size,
         )
@@ -493,7 +536,9 @@ object PackChain {
                 "pack/post.v" -> POST_VSH
                 "pack/normals.f" -> NORMAL_FSH.replace("__TEXEL__", "vec2(${1.0 / w}, ${1.0 / h})")
                 "pack/blit.f" -> BLIT_FSH
-                "pack/depth_scale.f" -> DEPTH_SCALE_FSH
+                "pack/depth_scale.f" -> DEPTH_SCALE_FSH.replace(
+                    "__DEPTH__", if (reverseDepth) "1.0 - texture(InSampler, texCoord).r" else "texture(InSampler, texCoord).r",
+                )
                 else -> null
             }
         }
@@ -503,7 +548,7 @@ object PackChain {
             normals = compile(device, source, id("pack/post.v"), id("pack/normals.f"),
                 BindGroupLayout.builder().withUniform("depthtex0", UniformType.COMBINED_IMAGE_SAMPLER).build())
         }
-        if (neededDepths.isNotEmpty() && renderScale < 1f && depthScale == null) {
+        if (neededDepths.isNotEmpty() && (renderScale < 1f || reverseDepth) && depthScale == null) {
             val pipeline = com.mojang.renderpearl.api.pipeline.RenderPipeline.builder(RenderPipelines.GLOBALS_SNIPPET)
                 .withLocation(id("pack/depth_scale"))
                 .withVertexShader(id("pack/post.v"))
@@ -664,10 +709,13 @@ object PackChain {
         val day = Math.floorMod(clock, 24000L).toInt()
         val probe = mc.gameRenderer.mainCamera().attributeProbe()
         val angle = probe.getValue(EnvironmentAttributes.SUN_ANGLE, partialTick)
-        val projection = ((mc.gameRenderer as GameRendererProjectionAccessor).`vertex$getLevelProjectionMatrixBuffer`()
+        val uploadedProjection = ((mc.gameRenderer as GameRendererProjectionAccessor).`vertex$getLevelProjectionMatrixBuffer`()
             as ProjectionMatrixBufferAccessor).`vertex$getLastUploadedProjection`()
-        uniformHeap.putFloat(uniformSlot, "near", projection?.zNear() ?: 0.05f)
-        uniformHeap.putFloat(uniformSlot, "far", projection?.zFar() ?: mc.options.effectiveRenderDistance * 16f)
+        val projection = frameProjection ?: uploadedProjection?.getMatrix(Matrix4f())
+        uniformHeap.putFloat(uniformSlot, "near", uploadedProjection?.zNear() ?: 0.05f)
+        val far = frameFar.takeIf { it > 0f } ?: uploadedProjection?.zFar()
+            ?: mc.options.effectiveRenderDistance * 16f
+        uniformHeap.putFloat(uniformSlot, "far", far)
         uniformHeap.putFloat(uniformSlot, "viewWidth", w.toFloat())
         uniformHeap.putFloat(uniformSlot, "viewHeight", h.toFloat())
         uniformHeap.putFloat(uniformSlot, "aspectRatio", w.toFloat() / h)
@@ -741,12 +789,18 @@ object PackChain {
         uniformHeap.putVec3(uniformSlot, "upPosition", 0f, 100f, 0f)
         uniformHeap.putIVec2(uniformSlot, "eyeBrightness", 240, 240)
         uniformHeap.putIVec2(uniformSlot, "eyeBrightnessSmooth", 240, 240)
-        val modelView = RenderSystem.getModelViewStack()
+        val modelView = frameViewRotation ?: mc.gameRenderer.mainCamera().getViewRotationMatrix(Matrix4f())
         putMatrix("gbufferModelView", modelView)
         putMatrix("gbufferModelViewInverse", inverseMatrix.set(modelView).invert())
         putMatrix("gbufferPreviousModelView", previousModelView)
         previousModelView.set(modelView)
-        projection?.getMatrix(projectionMatrix) ?: projectionMatrix.identity()
+        projection?.let(projectionMatrix::set) ?: projectionMatrix.identity()
+        if (projection != null && RenderSystem.getDevice().getDeviceInfo().isZZeroToOne()) {
+            // Legacy packs reconstruct view space from OpenGL NDC (-1..1), while
+            // RenderPearl/Vulkan stores depth in 0..1. Convert the clip-space Z
+            // row once so both the inverse projection and sampled depth agree.
+            vulkanToLegacyClip.mul(projectionMatrix, projectionMatrix)
+        }
         putMatrix("gbufferProjection", projectionMatrix)
         putMatrix("gbufferProjectionInverse", inverseMatrix.set(projectionMatrix).invert())
         putMatrix("gbufferPreviousProjection", previousProjection)
@@ -947,7 +1001,7 @@ void main() {
 #extension GL_ARB_separate_shader_objects : require
 uniform sampler2D InSampler;
 layout(location = 0) in vec2 texCoord;
-void main() { gl_FragDepth = texture(InSampler, texCoord).r; }
+void main() { gl_FragDepth = __DEPTH__; }
 """
 
     // 深度梯度→法线；__TEXEL__ 编译期注入像素尺寸

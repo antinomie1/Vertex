@@ -6,6 +6,7 @@ import com.mojang.renderpearl.api.GpuFormat
 import com.mojang.renderpearl.api.device.GpuDevice
 import com.mojang.renderpearl.api.pipeline.ColorTargetState
 import com.mojang.renderpearl.api.pipeline.BindGroupLayout
+import com.mojang.renderpearl.api.pipeline.DepthStencilState
 import com.mojang.renderpearl.api.pipeline.UniformType
 import com.mojang.renderpearl.api.pipeline.CompiledRenderPipeline
 import com.mojang.renderpearl.api.pipeline.RenderPipeline
@@ -67,7 +68,7 @@ object TerrainMesh {
         separateAo = false
         noiseSampler = false
         packSamplers = emptySet()
-        customFormat = format(requirements, separateAo)
+        customFormat = format(requirements)
         TerrainCommandCache.invalidate()
     }
 
@@ -93,7 +94,7 @@ object TerrainMesh {
             noiseSampler = terrainProg.samplers.contains("noisetex")
             packSamplers = terrainProg.samplers.toSet()
             requirements = TerrainRequirementScanner.scan(terrainProg.vertexSource)
-            customFormat = format(requirements, separateAo)
+            customFormat = format(requirements)
             val translatedVsh = dev.vertex.translate.LegacyTranslator.terrainVertex(terrainProg, separateAo)
             val translatedFsh = dev.vertex.translate.LegacyTranslator.terrainFragment(terrainProg, separateAo)
             val source = shaderSource(translatedVsh, translatedFsh)
@@ -194,7 +195,38 @@ object TerrainMesh {
         }
     }
 
-    @JvmStatic fun needsSeparateAo() = separateAo && prepared != null
+    private fun needsSeparateAo() = separateAo && prepared != null
+
+    /** Move vanilla's grayscale AO/directional factor into Color.a for separateAo packs. */
+    @JvmStatic
+    fun prepareSeparateAo(instance: com.mojang.blaze3d.vertex.QuadInstance) {
+        if (!needsSeparateAo()) return
+        for (vertex in 0..3) {
+            val color = instance.getColor(vertex)
+            instance.setColor(vertex, net.minecraft.util.ARGB.color(
+                net.minecraft.util.ARGB.red(color), 255, 255, 255,
+            ))
+        }
+    }
+
+    /** Apply a block tint without destroying the separated AO coefficient. */
+    @JvmStatic
+    fun multiplySeparateAoTint(instance: com.mojang.blaze3d.vertex.QuadInstance, tint: Int) {
+        if (!needsSeparateAo()) {
+            instance.multiplyColor(tint)
+            return
+        }
+        for (vertex in 0..3) {
+            val color = instance.getColor(vertex)
+            val alpha = net.minecraft.util.ARGB.alpha(color) * net.minecraft.util.ARGB.alpha(tint) / 255
+            instance.setColor(vertex, net.minecraft.util.ARGB.color(
+                alpha,
+                net.minecraft.util.ARGB.red(tint),
+                net.minecraft.util.ARGB.green(tint),
+                net.minecraft.util.ARGB.blue(tint),
+            ))
+        }
+    }
 
     @JvmStatic fun clearQuadPayload() = midUvActive.set(false)
 
@@ -244,7 +276,7 @@ object TerrainMesh {
         }
         val vanilla = layer.pipeline(multidraw)
         builder.withCull(vanilla.isCull())
-        vanilla.depthStencilState?.let(builder::withDepthStencilState)
+        builder.withDepthStencilState(vanilla.depthStencilState ?: DepthStencilState.DEFAULT)
         vanilla.colorTargetStates.forEachIndexed { index, target -> target?.let { builder.withColorTargetState(index, it) } }
         return builder.build()
     }
@@ -282,10 +314,9 @@ object TerrainMesh {
         val compiled: IdentityHashMap<RenderPipeline, CompiledRenderPipeline>,
     )
 
-    private fun format(requirements: TerrainRequirements, separateAo: Boolean = false) = VertexFormat.builder(0)
+    private fun format(requirements: TerrainRequirements) = VertexFormat.builder(0)
         .addAttribute("Position", GpuFormat.RGB32_FLOAT)
         .addAttribute("Color", GpuFormat.RGBA8_UNORM)
-        .apply { if (separateAo) addAttribute("Color2", GpuFormat.RGBA8_UNORM) }
         .addAttribute("UV0", GpuFormat.RG32_FLOAT)
         .addAttribute("UV1", GpuFormat.RG16_SINT)
         .addAttribute("UV2", GpuFormat.RG16_SINT)

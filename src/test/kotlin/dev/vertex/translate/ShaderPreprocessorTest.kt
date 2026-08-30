@@ -49,6 +49,24 @@ class ShaderPreprocessorTest {
     }
 
     @Test
+    fun `evaluates negative numeric conditionals`() {
+        val root = Files.createTempDirectory("vertex-preprocessor-negative")
+        val source = root.resolve("main.glsl")
+        source.writeText(
+            """#define CLOUD_HEIGHT -1
+                |#if CLOUD_HEIGHT == -1
+                |float lowerY = 192.0;
+                |#else
+                |float lowerY = CLOUD_HEIGHT;
+                |#endif
+            """.trimMargin(),
+        )
+        val output = ShaderPreprocessor(listOf(root)).process(source)
+        assertContains(output, "float lowerY = 192.0;")
+        assertFalse("float lowerY = -1;" in output)
+    }
+
+    @Test
     fun `include cycles fail with source context`() {
         val root = Files.createTempDirectory("vertex-preprocessor-cycle")
         root.resolve("a.glsl").writeText("#include \"b.glsl\"\n")

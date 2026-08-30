@@ -47,7 +47,33 @@ public abstract class LevelRendererTerrainMeshMixin {
         boolean renderClouds,
         CallbackInfo ci
     ) {
-        PackChain.beginFrame();
+        PackChain.setFrameCamera(camera);
+    }
+
+    /** Let the pack's deferred pass own volumetric clouds instead of drawing vanilla flat clouds. */
+    @Redirect(
+        method = "executeClassicTransparency",
+        at = @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/CloudRenderer;render(Lnet/minecraft/client/CloudStatus;Lcom/mojang/renderpearl/api/commands/RenderPass;)V")
+    )
+    private void vertex$renderPackCloudsOnly(
+        net.minecraft.client.renderer.CloudRenderer renderer,
+        net.minecraft.client.CloudStatus status,
+        RenderPass pass
+    ) {
+        if (!PackChain.usesVolumetricClouds()) renderer.render(status, pass);
+    }
+
+    @Redirect(
+        method = "executeOit",
+        at = @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/CloudRenderer;renderOit(Lnet/minecraft/client/CloudStatus;Lnet/minecraft/client/renderer/oit/OitStage;Lnet/minecraft/client/renderer/oit/OitRenderPassProvider$Parameters;)V")
+    )
+    private void vertex$renderPackCloudsOnlyOit(
+        net.minecraft.client.renderer.CloudRenderer renderer,
+        net.minecraft.client.CloudStatus status,
+        net.minecraft.client.renderer.oit.OitStage stage,
+        net.minecraft.client.renderer.oit.OitRenderPassProvider.Parameters parameters
+    ) {
+        if (!PackChain.usesVolumetricClouds()) renderer.renderOit(status, stage, parameters);
     }
 
     @Inject(method = "lambda$addMainPass$0", at = @At("HEAD"))

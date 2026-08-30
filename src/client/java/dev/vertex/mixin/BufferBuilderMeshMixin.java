@@ -2,13 +2,9 @@ package dev.vertex.mixin;
 
 import com.mojang.blaze3d.vertex.BufferBuilder;
 import com.mojang.blaze3d.vertex.VertexConsumer;
-import com.mojang.renderpearl.api.vertex.VertexFormat;
 import dev.vertex.render.TerrainMesh;
-import net.minecraft.util.ARGB;
-import org.lwjgl.system.MemoryUtil;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
-import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -18,14 +14,12 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 @Mixin(BufferBuilder.class)
 public abstract class BufferBuilderMeshMixin {
     @Shadow private long vertexPointer;
-    @Shadow @Final private VertexFormat format;
 
     @Inject(method = "endLastVertex", at = @At("HEAD"))
     private void vertex$finishTerrainVertex(CallbackInfo ci) {
         if (!TerrainMesh.isPrepared() || vertexPointer == -1L) return;
         VertexConsumer consumer = (VertexConsumer)(Object)this;
         consumer.setNormal(0.0f, 1.0f, 0.0f);
-        writeColor2(0xFFFFFFFF);
     }
 
     @Inject(method = "addVertex(FFF)Lcom/mojang/blaze3d/vertex/VertexConsumer;", at = @At("RETURN"))
@@ -35,7 +29,6 @@ public abstract class BufferBuilderMeshMixin {
         // Fluid tessellation does not emit a normal or a second color. Keep the
         // widened terrain contract complete without changing the vanilla writer.
         ((VertexConsumer)(Object)this).setNormal(0.0f, 1.0f, 0.0f);
-        writeColor2(0xFFFFFFFF);
     }
 
     @Inject(method = "addVertex(FFFIFFIIFFF)V", at = @At("RETURN"))
@@ -44,14 +37,5 @@ public abstract class BufferBuilderMeshMixin {
         float nx, float ny, float nz, CallbackInfo ci
     ) {
         TerrainMesh.fillExtraVertex((VertexConsumer)(Object)this);
-        if (TerrainMesh.needsSeparateAo()) {
-            writeColor2(color);
-        }
-    }
-
-    private void writeColor2(int color) {
-        if (!TerrainMesh.needsSeparateAo() || vertexPointer == -1L) return;
-        var element = format.getElement("Color2");
-        if (element != null) MemoryUtil.memPutInt(vertexPointer + element.offset(), ARGB.toABGR(color));
     }
 }

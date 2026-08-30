@@ -151,7 +151,7 @@ private inline fun <T> ArrayDeque<T>.replaceLast(file: Path, line: Int, transfor
 }
 
 private class Expression(source: String, private val symbols: Map<String, String>) {
-    private val tokens = Regex("defined|[A-Za-z_]\\w*|0[xX][0-9a-fA-F]+|\\d+|&&|\\|\\||==|!=|<=|>=|[()!<>]")
+    private val tokens = Regex("defined|[A-Za-z_]\\w*|0[xX][0-9a-fA-F]+|\\d+|&&|\\|\\||==|!=|<=|>=|[()!<>-]")
         .findAll(source).map { it.value }.toList()
     private var at = 0
 
@@ -176,6 +176,7 @@ private class Expression(source: String, private val symbols: Map<String, String
     }
     private fun unary(): Long = when {
         take("!") -> bool(unary() == 0L)
+        take("-") -> -unary()
         take("defined") -> {
             val wrapped = take("("); val name = next(); if (wrapped) require(take(")")); bool(name in symbols)
         }
