@@ -50,13 +50,13 @@ import net.minecraft.client.renderer.state.level.CameraRenderState
 import net.minecraft.resources.Identifier
 import net.minecraft.util.ARGB
 import net.minecraft.world.attribute.EnvironmentAttributes
+import net.minecraft.world.phys.Vec3
 import java.util.Optional
 import java.nio.file.Files
 import java.nio.file.Path
 import org.joml.Vector4f
 import org.joml.Matrix4f
-import kotlin.math.cos
-import kotlin.math.sin
+import org.joml.Vector3f
 import java.time.LocalDateTime
 
 /**
@@ -106,9 +106,11 @@ object PackChain {
     private var frameReady = false
     private var frameProjection: Matrix4f? = null
     private var frameViewRotation: Matrix4f? = null
+    private var frameCameraPosition: Vec3? = null
     private var frameFar = 0f
     private var pendingProjection: Matrix4f? = null
     private var pendingViewRotation: Matrix4f? = null
+    private var pendingCameraPosition: Vec3? = null
     private var pendingFar = 0f
     // Vulkan may keep several submissions in flight; two UBO slots can be
     // overwritten while an older frame is still sampling them.
@@ -164,8 +166,9 @@ object PackChain {
         extraTextures.clear(); extraViews.clear(); staticTextures.clear(); staticBindings.clear(); staticByName.clear(); textureSamplers.clear()
         uniformBuffer = null; timingPool = null; frameReady = false; failed = false
         previousFrameInitialized = false; uniformSlot = 0; frameCounter = 0; frameTimeCounter = 0f
-        frameProjection = null; frameViewRotation = null; frameFar = 0f
-        pendingProjection = null; pendingViewRotation = null; pendingFar = 0f
+        banks.reset()
+        frameProjection = null; frameViewRotation = null; frameCameraPosition = null; frameFar = 0f
+        pendingProjection = null; pendingViewRotation = null; pendingCameraPosition = null; pendingFar = 0f
         scaleResolved = false; builtForW = 0; builtForH = 0; w = 0; h = 0
         volumetricClouds = false
         targetBytes = 0; staticBytes = 0; needsNormals = false; neededDepths = emptySet(); activeColors = emptySet()
@@ -249,8 +252,14 @@ object PackChain {
         if (!camera.projectionMatrix.m00().isFinite()) return
         pendingProjection = Matrix4f(camera.projectionMatrix)
         pendingViewRotation = Matrix4f(camera.viewRotationMatrix)
+        pendingCameraPosition = camera.pos
         pendingFar = camera.depthFar.takeIf { it.isFinite() && it > 0f } ?: 0f
     }
+
+    /** The interpolated pose shared by the shadow and screen passes for this frame. */
+    @JvmStatic
+    fun cameraPositionForFrame(): Vec3 =
+        pendingCameraPosition ?: frameCameraPosition ?: Minecraft.getInstance().gameRenderer.mainCamera().position()
 
     @JvmStatic
     fun beginFrame(camera: CameraRenderState?) {
@@ -258,13 +267,16 @@ object PackChain {
         if (camera != null) {
             frameProjection = Matrix4f(camera.projectionMatrix)
             frameViewRotation = Matrix4f(camera.viewRotationMatrix)
+            frameCameraPosition = camera.pos
             frameFar = camera.depthFar.takeIf { it.isFinite() && it > 0f } ?: 0f
         } else {
             pendingProjection?.let { frameProjection = it }
             pendingViewRotation?.let { frameViewRotation = it }
+            pendingCameraPosition?.let { frameCameraPosition = it }
             if (pendingFar > 0f) frameFar = pendingFar
             pendingProjection = null
             pendingViewRotation = null
+            pendingCameraPosition = null
             pendingFar = 0f
         }
         try {
@@ -277,10 +289,11 @@ object PackChain {
             collectGpuTiming(uniformSlot)
             timingPool?.let { encoder.writeTimestamp(it, uniformSlot * 2) }
             updateUniforms(encoder)
+            // Keep the read bank from the previous frame for TAA/reflections;
+            // only clear the bank this frame's first writer will replace.
             for ((id, pair) in extraTextures) colorClears[id]?.let { color ->
-                for (texture in pair) encoder.clearColorTexture(texture, color)
+                encoder.clearColorTexture(pair[banks[id] xor 1], color)
             }
-            banks.reset()
             val sampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR)
             if (dedicatedColor0()) pass(encoder, "vertex-pack-early-input", colorView(0, 0, scene)) { rp ->
                 RenderSystem.bindDefaultUniforms(rp); rp.setPipeline(sceneToColor0!!); rp.setUniform("InSampler", scene, sampler)
@@ -717,15 +730,21 @@ object PackChain {
         lastFrameNanos = now
         frameTimeCounter = (frameTimeCounter + frameTime) % 3600f
         val mc = Minecraft.getInstance()
-        val camera = mc.gameRenderer.mainCamera().position()
+        // CameraRenderState is the interpolated pose used by this render pass;
+        // the mutable Camera object can still contain the previous tick while
+        // movement is being integrated.
+        val camera = frameCameraPosition ?: mc.gameRenderer.mainCamera().position()
         val clock = mc.level?.defaultClockTime ?: 0L
         val partialTick = mc.deltaTracker.getGameTimeDeltaPartialTick(true)
         val day = Math.floorMod(clock, 24000L).toInt()
         val probe = mc.gameRenderer.mainCamera().attributeProbe()
-        // EnvironmentAttributes.SUN_ANGLE is degrees; legacy shader packs use
-        // a normalized turn for sunAngle and radians for vector math.
+        // EnvironmentAttributes.SUN_ANGLE is an absolute degree rotation (0°
+        // is the sun overhead). Legacy shader packs expose the orbit as a
+        // normalized turn, with 0.25 at noon and 0.75 at midnight.
         val angleDegrees = probe.getValue(EnvironmentAttributes.SUN_ANGLE, partialTick)
-        val angle = (angleDegrees / 360f).let { (it % 1f + 1f) % 1f }
+        val moonAngleDegrees = probe.getValue(EnvironmentAttributes.MOON_ANGLE, partialTick)
+        val sunTurn = irisSunTurn(angleDegrees)
+        val moonTurn = irisSunTurn(moonAngleDegrees)
         val uploadedProjection = ((mc.gameRenderer as GameRendererProjectionAccessor).`vertex$getLevelProjectionMatrixBuffer`()
             as ProjectionMatrixBufferAccessor).`vertex$getLastUploadedProjection`()
         val projection = frameProjection ?: uploadedProjection?.getMatrix(Matrix4f())
@@ -739,9 +758,8 @@ object PackChain {
         uniformHeap.putFloat(uniformSlot, "frameTime", frameTime)
         uniformHeap.putFloat(uniformSlot, "frameTimeCounter", frameTimeCounter)
         uniformHeap.putFloat(uniformSlot, "eyeAltitude", camera.y.toFloat())
-        val timeAngle = angle
-        uniformHeap.putFloat(uniformSlot, "sunAngle", timeAngle)
-        uniformHeap.putFloat(uniformSlot, "shadowAngle", timeAngle)
+        uniformHeap.putFloat(uniformSlot, "sunAngle", sunTurn)
+        uniformHeap.putFloat(uniformSlot, "shadowAngle", if (sunTurn <= 0.5f) sunTurn else moonTurn)
         uniformHeap.putFloat(uniformSlot, "timeAngle", day / 24000f)
         uniformHeap.putFloat(uniformSlot, "timeBrightness", kotlin.math.sin(day / 24000f * (Math.PI * 2.0).toFloat()).coerceAtLeast(0f))
         val shadowFadeOut1 = ((day - 12330) / 230f).coerceIn(0f, 1f)
@@ -805,14 +823,18 @@ object PackChain {
         uniformHeap.putIVec3(uniformSlot, "currentDate", dateScratch[0], dateScratch[1], dateScratch[2])
         uniformHeap.putIVec3(uniformSlot, "currentTime", dateScratch[3], dateScratch[4], dateScratch[5])
         uniformHeap.putIVec2(uniformSlot, "currentYearTime", dateScratch[6], dateScratch[7])
-        val angleRadians = Math.toRadians(angleDegrees.toDouble()).toFloat()
-        uniformHeap.putVec3(uniformSlot, "sunPosition", cos(angleRadians) * 100f, sin(angleRadians) * 100f, 0f)
-        uniformHeap.putVec3(uniformSlot, "shadowLightPosition", cos(angleRadians) * 100f, sin(angleRadians) * 100f, 35f)
-        uniformHeap.putVec3(uniformSlot, "moonPosition", -cos(angleRadians) * 100f, -sin(angleRadians) * 100f, 0f)
-        uniformHeap.putVec3(uniformSlot, "upPosition", 0f, 100f, 0f)
+        val celestialView = frameViewRotation ?: mc.gameRenderer.mainCamera().getViewRotationMatrix(Matrix4f())
+        val sunPosition = celestialPosition(celestialView, angleDegrees)
+        val moonPosition = celestialPosition(celestialView, moonAngleDegrees)
+        val shadowPosition = if (sunTurn <= 0.5f) sunPosition else moonPosition
+        val upPosition = celestialPosition(celestialView, 0f)
+        uniformHeap.putVec3(uniformSlot, "sunPosition", sunPosition.x, sunPosition.y, sunPosition.z)
+        uniformHeap.putVec3(uniformSlot, "shadowLightPosition", shadowPosition.x, shadowPosition.y, shadowPosition.z)
+        uniformHeap.putVec3(uniformSlot, "moonPosition", moonPosition.x, moonPosition.y, moonPosition.z)
+        uniformHeap.putVec3(uniformSlot, "upPosition", upPosition.x, upPosition.y, upPosition.z)
         uniformHeap.putIVec2(uniformSlot, "eyeBrightness", 240, 240)
         uniformHeap.putIVec2(uniformSlot, "eyeBrightnessSmooth", 240, 240)
-        val modelView = frameViewRotation ?: mc.gameRenderer.mainCamera().getViewRotationMatrix(Matrix4f())
+        val modelView = celestialView
         if (!previousFrameInitialized) previousModelView.set(modelView)
         putMatrix("gbufferModelView", modelView)
         putMatrix("gbufferModelViewInverse", inverseMatrix.set(modelView).invert())
@@ -839,6 +861,19 @@ object PackChain {
         previousFrameInitialized = true
         frameCounter++
     }
+
+    private fun irisSunTurn(degrees: Float): Float {
+        val celestial = (degrees / 360f).let { (it % 1f + 1f) % 1f }
+        return (if (celestial < 0.75f) celestial + 0.25f else celestial - 0.75f)
+            .let { (it % 1f + 1f) % 1f }
+    }
+
+    /** Match vanilla's celestial modelview: rotate around X, then the -90° yaw. */
+    private fun celestialPosition(view: Matrix4f, degrees: Float): Vector3f =
+        Vector3f(0f, 100f, 0f)
+            .rotateX(Math.toRadians(degrees.toDouble()).toFloat())
+            .rotateY((-Math.PI * 0.5).toFloat())
+            .let(view::transformDirection)
 
     private fun putMatrix(name: String, matrix: Matrix4f) =
         uniformHeap.putFloats(uniformSlot, name, matrix.get(matrixScratch))

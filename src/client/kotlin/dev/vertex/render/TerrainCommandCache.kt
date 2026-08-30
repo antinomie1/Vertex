@@ -42,6 +42,9 @@ object TerrainCommandCache {
         val currentEpoch = epoch.get()
         val cached = bundles.firstOrNull { it.matches(currentEpoch, terrain, groups, infos, sampler, atlas, wireframe) }
         if (cached != null) {
+            // TerrainUniform contains the camera-relative translation and is
+            // mutable even when the visible geometry bundle is unchanged.
+            pass.setUniform("TerrainUniform", terrain)
             cached.commands.forEach { it(pass) }
             hits++
         } else {
@@ -94,11 +97,21 @@ object TerrainCommandCache {
             else it.setUniform(name, view, sampler)
         }
         override fun setUniform(name: String, buffer: GpuBuffer) = emit { it.setUniform(name, buffer) }
-        override fun setUniform(name: String, buffer: GpuBufferSlice) = emit {
-            // The cached command bundle can outlive a frame. Rebind the rotating
-            // pack UBO at replay time so movement never samples a stale slot.
-            if (name == "VertexPackUniforms") PackChain.bindUniforms(it)
-            else it.setUniform(name, buffer)
+        override fun setUniform(name: String, buffer: GpuBufferSlice) {
+            // TerrainUniform contains the camera-relative translation. It must be
+            // applied while recording, but never captured in the replay bundle:
+            // the cache hit path binds the current slice immediately before replay.
+            if (name == "TerrainUniform") {
+                out.setUniform(name, buffer)
+                return
+            }
+            emit {
+                // The cached command bundle can outlive a frame. Rebind the
+                // rotating pack UBO at replay time so movement never samples a
+                // stale slot.
+                if (name == "VertexPackUniforms") PackChain.bindUniforms(it)
+                else it.setUniform(name, buffer)
+            }
         }
         override fun pushConstants(data: ByteBuffer) { val copy = data.copy(); emit { copy.rewind(); it.pushConstants(copy) } }
         override fun enableScissor(x: Int, y: Int, width: Int, height: Int) = emit { it.enableScissor(x, y, width, height) }

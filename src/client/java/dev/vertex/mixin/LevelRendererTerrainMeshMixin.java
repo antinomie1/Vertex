@@ -86,8 +86,11 @@ public abstract class LevelRendererTerrainMeshMixin {
         boolean alwaysOnTop,
         CallbackInfo ci
     ) {
-        PackChain.beginFrame();
         ShadowRenderer.render(sections);
+        // ShadowRenderer may refresh its cached light-space matrices on a
+        // movement/angle boundary. Upload pack uniforms afterwards so screen
+        // passes sample the shadow map with the same matrices that rendered it.
+        PackChain.beginFrame();
     }
 
     @Redirect(

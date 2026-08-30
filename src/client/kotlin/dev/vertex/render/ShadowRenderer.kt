@@ -43,9 +43,6 @@ import java.nio.ByteOrder
 import java.util.Optional
 import java.util.OptionalDouble
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.math.abs
-import kotlin.math.cos
-import kotlin.math.sin
 
 /** Real light-space depth pass for the visible opaque terrain set. */
 object ShadowRenderer {
@@ -62,7 +59,15 @@ object ShadowRenderer {
     private var active = false
     private const val SHADOW_SLOTS = 4
     private const val SHADOW_SLOT_BYTES = 256L
+    private const val SHADOW_INTERVAL = 2f
+    private const val TWO_PI = (Math.PI * 2.0).toFloat()
+    // Iris keeps the shadow depth range pack-compatible and independent of
+    // shadowDistance. BSL's DistortShadow applies its own z remap afterwards.
+    private const val SHADOW_NEAR = -100.05f
+    private const val SHADOW_FAR = 156f
     private var slot = 0
+    private var shadowDistance = 160f
+    private var sunPathRotation = 0f
     private var failed = false
     private val logged = AtomicBoolean()
     private val cacheLogged = AtomicBoolean()
@@ -84,6 +89,7 @@ object ShadowRenderer {
         listOf(base, multidraw).filterNotNull().distinct().forEach { runCatching { it.close() } }
         depthView = null; depthTexture = null; colorView = null; colorTexture = null; uniformBuffer = null
         base = null; multidraw = null; active = false; failed = false; discovered = false; requested = emptySet(); slot = 0
+        shadowDistance = 160f; sunPathRotation = 0f
         logged.set(false); cacheLogged.set(false); cache.invalidate()
     }
 
@@ -94,6 +100,7 @@ object ShadowRenderer {
         val root = PackRuntime.root(mc.gameDirectory.toPath())
         requested = PackFrontend.loadScreenChain(root, PackRuntime.options()).flatMap { it.samplers }
             .filter(SHADOW_SAMPLERS::contains).toSet()
+        parseShadowConstants(runCatching { PackFrontend.loadShadow(root, PackRuntime.options())?.vertexSource }.getOrNull())
         resolution = System.getProperty("vertex.shadowResolution")?.toIntOrNull() ?: 2048
         require(resolution in 256..8192 && resolution.countOneBits() == 1) {
             "vertex.shadowResolution must be a power of two in 256..8192"
@@ -143,6 +150,7 @@ object ShadowRenderer {
                 SHADOW_SLOT_BYTES * SHADOW_SLOTS,
             )
             val pack = PackFrontend.loadShadow(root, PackRuntime.options())
+            parseShadowConstants(pack?.vertexSource)
             val requirements = pack?.let { dev.vertex.translate.TerrainRequirementScanner.scan(it.vertexSource) }
             val separateAo = PackSemanticsParser.load(root, PackRuntime.options()).separateAo
             compile(device, colorView != null, pack, separateAo, requirements?.midTexCoord == true)
@@ -160,8 +168,11 @@ object ShadowRenderer {
         if (failed || base == null || !TerrainMesh.isPrepared()) return
         try {
             val mc = Minecraft.getInstance()
-            val angle = sunAngle(mc)
-            val camera = mc.gameRenderer.mainCamera().position()
+            val angle = shadowAngle(mc)
+            // Use the same interpolated render pose as the screen uniforms. The
+            // mutable Camera can still contain the previous tick during movement,
+            // which would otherwise invalidate the shadow cache one frame early.
+            val camera = PackChain.cameraPositionForFrame()
             if (!cache.needsRender(angle, camera.x, camera.z)) {
                 if (cacheLogged.compareAndSet(false, true)) Vertex.log.info("[Vertex] shadow cache hit verified")
                 return
@@ -224,20 +235,31 @@ object ShadowRenderer {
 
     private fun updateMatrix(encoder: com.mojang.renderpearl.api.commands.CommandEncoder, angle: Float) {
         val mc = Minecraft.getInstance()
-        val range = mc.options.effectiveRenderDistance.coerceAtLeast(8) * 16f
-        val x = cos(angle) * range
-        val y = sin(angle) * range
-        val upY = if (abs(y) > range * 0.95f) 0f else 1f
-        val upZ = if (abs(y) > range * 0.95f) 1f else 0f
+        val range = shadowDistance.takeIf { it.isFinite() && it > 0f }
+            ?: (mc.options.effectiveRenderDistance.coerceAtLeast(8) * 16f)
+        val shadowTurn = (angle / TWO_PI).let { (it % 1f + 1f) % 1f }
+        val skyAngle = if (shadowTurn < 0.25f) shadowTurn + 0.75f else shadowTurn - 0.25f
         // Pack-facing shadowProjection stays in legacy OpenGL NDC because BSL's
         // projMAD/DistortShadow expects [-1, 1]. Rasterization on Vulkan uses
         // [0, 1] depth, so only the MVP written to the shadow pass is converted.
-        projection.setOrtho(-range, range, -range, range, -range * 2f, range * 2f)
+        projection.setOrtho(-range, range, -range, range, SHADOW_NEAR, SHADOW_FAR)
         rasterProjection.setOrtho(
-            -range, range, -range, range, -range * 2f, range * 2f,
+            -range, range, -range, range, SHADOW_NEAR, SHADOW_FAR,
             RenderSystem.getDevice().getDeviceInfo().isZZeroToOne(),
         )
-        modelView.identity().lookAt(x, y, range * 0.35f, 0f, 0f, 0f, 0f, upY, upZ)
+        // Match Iris' baseline shadow camera. The rotation order/signs are part
+        // of the shader-pack ABI, including sunPathRotation.
+        modelView.identity()
+            .rotateX((Math.PI * 0.5).toFloat())
+            .rotateZ(-skyAngle * TWO_PI)
+            .rotateX(Math.toRadians(sunPathRotation.toDouble()).toFloat())
+        val camera = PackChain.cameraPositionForFrame()
+        val halfInterval = SHADOW_INTERVAL * 0.5f
+        modelView.translate(
+            camera.x.toFloat() % SHADOW_INTERVAL - halfInterval,
+            camera.y.toFloat() % SHADOW_INTERVAL - halfInterval,
+            camera.z.toFloat() % SHADOW_INTERVAL - halfInterval,
+        )
         inverseProjection.set(projection).invert()
         inverseModelView.set(modelView).invert()
         matrix.set(rasterProjection).mul(modelView)
@@ -253,10 +275,24 @@ object ShadowRenderer {
         builder.withDepthAttachment(depthView!!, OptionalDouble.of(1.0))
     }.build()
 
-    private fun sunAngle(mc: Minecraft): Float {
-        val degrees = mc.gameRenderer.mainCamera().attributeProbe()
-            .getValue(EnvironmentAttributes.SUN_ANGLE, mc.deltaTracker.getGameTimeDeltaPartialTick(true))
-        return Math.toRadians(degrees.toDouble()).toFloat()
+    private fun shadowAngle(mc: Minecraft): Float {
+        val probe = mc.gameRenderer.mainCamera().attributeProbe()
+        val partialTick = mc.deltaTracker.getGameTimeDeltaPartialTick(true)
+        val sun = irisSunTurn(probe.getValue(EnvironmentAttributes.SUN_ANGLE, partialTick))
+        val moon = irisSunTurn(probe.getValue(EnvironmentAttributes.MOON_ANGLE, partialTick))
+        return (if (sun <= 0.5f) sun else moon) * TWO_PI
+    }
+
+    private fun irisSunTurn(degrees: Float): Float {
+        val celestial = (degrees / 360f).let { (it % 1f + 1f) % 1f }
+        return (if (celestial < 0.75f) celestial + 0.25f else celestial - 0.75f)
+            .let { (it % 1f + 1f) % 1f }
+    }
+
+    private fun parseShadowConstants(source: String?) {
+        if (source == null) return
+        SHADOW_DISTANCE.find(source)?.groupValues?.get(1)?.toFloatOrNull()?.takeIf { it > 0f }?.let { shadowDistance = it }
+        SUN_PATH_ROTATION.find(source)?.groupValues?.get(1)?.toFloatOrNull()?.let { sunPathRotation = it }
     }
 
     private fun compile(
@@ -318,6 +354,8 @@ object ShadowRenderer {
 
     private fun id(path: String) = Identifier.fromNamespaceAndPath("vertex", path)
     private val SHADOW_SAMPLERS = setOf("shadowtex0", "shadowtex1", "shadowcolor0", "shadowcolor1")
+    private val SHADOW_DISTANCE = Regex("""(?m)^\s*const\s+float\s+shadowDistance\s*=\s*([-+]?\d+(?:\.\d+)?)""")
+    private val SUN_PATH_ROTATION = Regex("""(?m)^\s*const\s+float\s+sunPathRotation\s*=\s*([-+]?\d+(?:\.\d+)?)""")
     private val CLEAR = Vector4f(1f, 1f, 1f, 1f)
 
     private const val VERTEX_SHADER = """#version 330
