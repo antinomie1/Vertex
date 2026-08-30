@@ -376,7 +376,7 @@ object PackChain {
         pass.setUniform("Sampler0", atlas, atlasSampler)
         TerrainMesh.bindMaterialSamplers(pass)
         staticByName["noisetex"]?.let { pass.setUniform("noisetex", it.view, it.sampler) }
-        bindShadowSamplers(pass, sampler)
+        bindShadowSamplers(pass)
         bindUniforms(pass)
     }
 
@@ -392,9 +392,13 @@ object PackChain {
         pass.setUniform("Sampler0", atlas, RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST))
     }
 
-    private fun bindShadowSamplers(pass: RenderPass, sampler: GpuSampler) {
+    private fun bindShadowSamplers(pass: RenderPass) {
+        // Chunk passes intentionally use a nearest sampler for the block atlas.
+        // Shadow samplers have different semantics: BSL's shadow2D path expects
+        // the hardware's filtered depth lookup, so never inherit the atlas mode.
+        val shadowSampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR)
         fun bind(name: String, view: GpuTextureView?) {
-            if (view != null) runCatching { pass.setUniform(name, view, sampler) }
+            if (view != null) runCatching { pass.setUniform(name, view, shadowSampler) }
         }
         bind("shadowtex0", ShadowRenderer.view("shadowtex0"))
         bind("shadowtex1", ShadowRenderer.view("shadowtex1"))
@@ -417,7 +421,7 @@ object PackChain {
         bind("depthtex1", depthViews[1] ?: scene)
         bind("depthtex2", depthViews[2] ?: scene)
         bind("normalsTex", normalView)
-        bindShadowSamplers(pass, sampler)
+        bindShadowSamplers(pass)
     }
 
     private fun enabled() = !failed && PackRuntime.isEnabled() &&
