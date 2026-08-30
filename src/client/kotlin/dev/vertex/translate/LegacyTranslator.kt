@@ -95,7 +95,7 @@ $outputs
 """ + body.trimStart() + "\n"
     }
 
-    fun terrainFragment(program: LoadedProgram, separateAo: Boolean = false): String {
+    fun terrainFragment(program: LoadedProgram, separateAo: Boolean = false, reverseDepth: Boolean = false): String {
         val varyings = varyingDeclarations(program.vertexSource)
         val fragmentVaryings = varyingDeclarations(program.fragmentSource)
         require(fragmentVaryings.keys.all(varyings::containsKey)) { "terrain fragment references an undeclared varying" }
@@ -112,6 +112,7 @@ $outputs
             .let(::modernizeTextureCalls)
             .let(LegacyUniformTranslator::translate)
             .let(::wrapAlphaTest)
+        body = legacyFragmentDepth(body, reverseDepth)
         return """#version 330
 #extension GL_ARB_separate_shader_objects : require
 #include <minecraft:fog.glsl>
@@ -240,7 +241,7 @@ $outputs
     }
 
     /** Translates the fragment half while preserving the pack's varying names. */
-    fun dynamicFragment(program: LoadedProgram, dropExtraTargets: Boolean = false): String {
+    fun dynamicFragment(program: LoadedProgram, dropExtraTargets: Boolean = false, reverseDepth: Boolean = false): String {
         val varyings = varyingDeclarations(program.vertexSource)
         val fragmentVaryings = varyingDeclarations(program.fragmentSource)
         require(fragmentVaryings.keys.all(varyings::containsKey)) { "dynamic fragment references an undeclared varying" }
@@ -256,6 +257,7 @@ $outputs
             .replace(Regex("""\bgl_FragColor\b"""), "fragColor")
             .let(LegacyUniformTranslator::translate)
             .let(::wrapAlphaTest)
+        body = legacyFragmentDepth(body, reverseDepth)
         if (dropExtraTargets) body = body.replace(Regex("""\bgl_FragData\s*\[\s*[1-9]\s*]\s*=\s*[^;]+;"""), "")
         else require(!Regex("""gl_FragData\s*\[\s*[1-9]""").containsMatchIn(body)) {
             "dynamic fragment programs must write only render target 0"
@@ -314,7 +316,7 @@ $outputs
 """ + body.trimStart()
     }
 
-    fun skyFragment(program: LoadedProgram, includeFog: Boolean = true): String {
+    fun skyFragment(program: LoadedProgram, includeFog: Boolean = true, reverseDepth: Boolean = false): String {
         val varyings = varyingDeclarations(program.vertexSource)
         val fragmentVaryings = varyingDeclarations(program.fragmentSource)
         require(fragmentVaryings.keys.all(varyings::containsKey)) { "sky fragment references an undeclared varying" }
@@ -327,6 +329,7 @@ $outputs
             .replace(Regex("""\bgl_FragColor\b"""), "fragColor")
             .let(::modernizeTextureCalls)
             .let(LegacyUniformTranslator::translate)
+            .let { legacyFragmentDepth(it, reverseDepth) }
         require(!Regex("""gl_FragData\s*\[\s*[1-9]""").containsMatchIn(body)) {
             "sky fragment programs must write only render target 0"
         }
@@ -385,7 +388,7 @@ $outputs
 """ + body.trimStart()
     }
 
-    fun particleFragment(program: LoadedProgram): String = dynamicFragment(program)
+    fun particleFragment(program: LoadedProgram, reverseDepth: Boolean = false): String = dynamicFragment(program, reverseDepth = reverseDepth)
 
     fun shadowVertex(program: LoadedProgram, separateAo: Boolean = false, midTexCoord: Boolean = false): String {
         var location = 0
@@ -397,7 +400,13 @@ $outputs
                     "layout(location = ${location++}) out ${match.groupValues[1]} ${raw.trim()};"
                 }
             }
-            .replace(Regex("""\bftransform\s*\(\s*\)"""), "vertexShadowMvp * vec4(pos, 1.0)")
+            // Pack shadow shaders use ftransform() to reconstruct the shadow
+            // world position from the pack-facing OpenGL matrices. The final
+            // clip position must use the native raster matrix instead; Vulkan
+            // rejects the legacy [-1, 1] depth range used by shadowProjection.
+            .replace(Regex("""\bgl_Position\s*=\s*shadowProjection\s*\*\s*shadowModelView\s*\*\s*position\s*;"""),
+                "gl_Position = vertexShadowMvp * position;")
+            .replace(Regex("""\bftransform\s*\(\s*\)"""), "shadowProjection * shadowModelView * vec4(pos, 1.0)")
             .replace(Regex("""\bgl_Vertex\b"""), "vec4(pos, 1.0)")
             .replace(Regex("""\bgl_MultiTexCoord0\b"""), "vec4(UV0, 0.0, 1.0)")
             .replace(Regex("""\bgl_MultiTexCoord[12]\b"""), "vec4(0.0)")
@@ -487,6 +496,10 @@ layout(std140) uniform ShadowUniforms { mat4 vertexShadowMvp; };
             "#define shadow2D(s, c) vec4(float((c).z <= texture((s), (c).xy).r))\n$modern"
         } else modern
     }
+
+    /** Legacy pack shaders expect the OpenGL depth direction in gl_FragCoord.z. */
+    private fun legacyFragmentDepth(source: String, reverseDepth: Boolean): String =
+        if (reverseDepth) source.replace(Regex("""\bgl_FragCoord\.z\b"""), "(1.0 - gl_FragCoord.z)") else source
 
     /** RenderPipeline carries the vanilla cutout threshold as a define. */
     private fun wrapAlphaTest(source: String): String = source.replace(

@@ -81,7 +81,15 @@ object DynamicRenderer {
                         gpu,
                         entityPipelines,
                         entityShaderId,
-                        shaderSource(entityShaderId, LegacyTranslator.dynamicVertex(dynamic), LegacyTranslator.dynamicFragment(dynamic, dropExtraTargets = true)),
+                        shaderSource(
+                            entityShaderId,
+                            LegacyTranslator.dynamicVertex(dynamic),
+                            LegacyTranslator.dynamicFragment(
+                                dynamic,
+                                dropExtraTargets = true,
+                                reverseDepth = PackChain.usesReverseDepth(),
+                            ),
+                        ),
                         ::compatible,
                         dynamic.samplers.toSet(),
                         setOf("EMISSIVE"),
@@ -99,7 +107,15 @@ object DynamicRenderer {
                             gpu,
                             blockPipelines,
                             blockShaderId,
-                            shaderSource(blockShaderId, LegacyTranslator.blockVertex(dynamic), LegacyTranslator.dynamicFragment(dynamic, dropExtraTargets = true)),
+                            shaderSource(
+                                blockShaderId,
+                                LegacyTranslator.blockVertex(dynamic),
+                                LegacyTranslator.dynamicFragment(
+                                    dynamic,
+                                    dropExtraTargets = true,
+                                    reverseDepth = PackChain.usesReverseDepth(),
+                                ),
+                            ),
                             ::blockCompatible,
                             dynamic.samplers.toSet(),
                             setOf("EMISSIVE"),
@@ -231,7 +247,7 @@ object DynamicRenderer {
                 val source = shaderSource(
                     skyShaderId,
                     LegacyTranslator.skyVertex(program),
-                    LegacyTranslator.skyFragment(program),
+                    LegacyTranslator.skyFragment(program, reverseDepth = PackChain.usesReverseDepth()),
                 )
                 val skipped = compileGroup(
                     gpu,
@@ -252,7 +268,11 @@ object DynamicRenderer {
                 val source = shaderSource(
                     starShaderId,
                     LegacyTranslator.skyVertex(program, includeFog = false, forceTransparent = true),
-                    LegacyTranslator.skyFragment(program, includeFog = false),
+                    LegacyTranslator.skyFragment(
+                        program,
+                        includeFog = false,
+                        reverseDepth = PackChain.usesReverseDepth(),
+                    ),
                 )
                 compileGroup(gpu, listOf(RenderPipelines.STARS), starShaderId, source, { positionOnly(it) }, program.samplers.toSet())
                 skyArmed = skyArmed || pipelines.containsKey(RenderPipelines.STARS)
@@ -263,7 +283,7 @@ object DynamicRenderer {
                 val source = shaderSource(
                     particleShaderId,
                     LegacyTranslator.particleVertex(program),
-                    LegacyTranslator.particleFragment(program),
+                    LegacyTranslator.particleFragment(program, reverseDepth = PackChain.usesReverseDepth()),
                 )
                 val skipped = compileGroup(gpu, listOf(RenderPipelines.OPAQUE_PARTICLE, RenderPipelines.TRANSLUCENT_PARTICLE), particleShaderId, source, { particle(it) }, program.samplers.toSet())
                 particleArmed = RenderPipelines.OPAQUE_PARTICLE in pipelines || RenderPipelines.TRANSLUCENT_PARTICLE in pipelines
@@ -276,7 +296,7 @@ object DynamicRenderer {
                 val source = shaderSource(
                     particleShaderId,
                     LegacyTranslator.particleVertex(program),
-                    LegacyTranslator.particleFragment(program),
+                    LegacyTranslator.particleFragment(program, reverseDepth = PackChain.usesReverseDepth()),
                 )
                 val skipped = compileGroup(gpu, listOf(RenderPipelines.WEATHER), particleShaderId, source, { particle(it) }, program.samplers.toSet())
                 weatherArmed = RenderPipelines.WEATHER in pipelines

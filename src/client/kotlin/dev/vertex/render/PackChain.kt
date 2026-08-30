@@ -350,6 +350,10 @@ object PackChain {
     @JvmStatic
     fun usesVolumetricClouds() = volumetricClouds
 
+    /** Native RenderPearl depth is reversed on the Vulkan path. */
+    @JvmStatic
+    fun usesReverseDepth() = reverseDepth
+
     /** Binds the current frame's pack uniforms to game-owned render passes. */
     @JvmStatic
     fun bindUniforms(pass: RenderPass) {

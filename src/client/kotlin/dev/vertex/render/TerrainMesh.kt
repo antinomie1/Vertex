@@ -100,7 +100,11 @@ object TerrainMesh {
             requirements = TerrainRequirementScanner.scan(terrainProg.vertexSource)
             customFormat = format(requirements)
             val translatedVsh = dev.vertex.translate.LegacyTranslator.terrainVertex(terrainProg, separateAo)
-            val translatedFsh = dev.vertex.translate.LegacyTranslator.terrainFragment(terrainProg, separateAo)
+            val translatedFsh = dev.vertex.translate.LegacyTranslator.terrainFragment(
+                terrainProg,
+                separateAo,
+                PackChain.usesReverseDepth(),
+            )
             val source = shaderSource(translatedVsh, translatedFsh)
             val solid = createPipelinePair(ChunkSectionLayer.SOLID)
             val cutout = createPipelinePair(ChunkSectionLayer.CUTOUT)
