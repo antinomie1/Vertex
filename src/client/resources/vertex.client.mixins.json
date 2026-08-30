@@ -21,6 +21,7 @@
     "ChunkSectionsToRenderMeshMixin",
     "ChunkSectionsToRenderAccessor",
     "DrawIndirectAccessor",
+    "DrawSeparateAccessor",
     "ChunkSectionsToRenderDrawMixin",
     "ModelBlockRendererMeshMixin",
     "VertexConsumerMeshMixin",

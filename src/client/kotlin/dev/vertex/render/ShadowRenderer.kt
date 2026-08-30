@@ -28,7 +28,10 @@ import dev.vertex.runtime.ImageClass
 import dev.vertex.runtime.ProgramFamily
 import dev.vertex.runtime.RenderTier
 import dev.vertex.translate.LegacyTranslator
+import dev.vertex.mixin.DrawIndirectAccessor
+import dev.vertex.mixin.DrawSeparateAccessor
 import net.minecraft.client.Minecraft
+import net.minecraft.client.renderer.chunk.ChunkSectionLayer
 import net.minecraft.client.renderer.RenderPipelines
 import net.minecraft.client.renderer.chunk.ChunkSectionLayerGroup
 import net.minecraft.client.renderer.chunk.ChunkSectionsToRender
@@ -69,8 +72,10 @@ object ShadowRenderer {
     private var shadowDistance = 160f
     private var sunPathRotation = 0f
     private var failed = false
+    private var shadowValid = false
     private val logged = AtomicBoolean()
     private val cacheLogged = AtomicBoolean()
+    private val emptyLogged = AtomicBoolean()
     private val cache = ShadowCacheState()
     private val matrix = Matrix4f()
     private val modelView = Matrix4f()
@@ -91,6 +96,8 @@ object ShadowRenderer {
         base = null; multidraw = null; active = false; failed = false; discovered = false; requested = emptySet(); slot = 0
         shadowDistance = 160f; sunPathRotation = 0f
         logged.set(false); cacheLogged.set(false); cache.invalidate()
+        shadowValid = false
+        emptyLogged.set(false)
     }
 
     fun discover() {
@@ -178,6 +185,7 @@ object ShadowRenderer {
                 return
             }
             val renderEpoch = cache.epoch()
+            val hasGeometry = hasOpaqueGeometry(sections)
             val device = RenderSystem.getDevice()
             val encoder = device.createCommandEncoder()
             updateMatrix(encoder, angle)
@@ -193,8 +201,18 @@ object ShadowRenderer {
                     active = false
                 }
             }
-            cache.markRendered(angle, camera.x, camera.z, renderEpoch)
-            if (logged.compareAndSet(false, true)) Vertex.log.info("[Vertex] shadow terrain draw verified")
+            if (hasGeometry) {
+                cache.markRendered(angle, camera.x, camera.z, renderEpoch)
+                shadowValid = true
+                if (logged.compareAndSet(false, true)) Vertex.log.info("[Vertex] shadow terrain draw verified")
+            } else if (emptyLogged.compareAndSet(false, true)) {
+                Vertex.log.info("[Vertex] shadow pass deferred until opaque sections are uploaded")
+                cache.invalidate()
+            } else {
+                // The visible-set object is created before the asynchronous chunk
+                // uploads complete. Keep retrying instead of caching an empty map.
+                cache.invalidate()
+            }
             slot = (slot + 1) % SHADOW_SLOTS
         } catch (t: Throwable) {
             active = false
@@ -220,7 +238,7 @@ object ShadowRenderer {
     }
 
     fun view(name: String): GpuTextureView? = when (name) {
-        "shadowtex0", "shadowtex1" -> depthView
+        "shadowtex0", "shadowtex1" -> if (shadowValid) depthView else colorView ?: depthView
         "shadowcolor0", "shadowcolor1" -> colorView
         else -> null
     }
@@ -268,6 +286,23 @@ object ShadowRenderer {
         for (value in scratch) staging.putFloat(value)
         staging.flip()
         encoder.writeToBuffer(uniformBuffer!!.slice(slot * SHADOW_SLOT_BYTES, 64L), staging)
+    }
+
+    @Suppress("CAST_NEVER_SUCCEEDS")
+    private fun hasOpaqueGeometry(sections: ChunkSectionsToRender): Boolean = when (sections) {
+        is ChunkSectionsToRender.DrawIndirect -> {
+            val groups = (sections as DrawIndirectAccessor).`vertex$drawGroups`()
+            listOf(ChunkSectionLayer.SOLID, ChunkSectionLayer.CUTOUT).any { layer ->
+                groups[layer].orEmpty().any { it.drawCount() > 0 }
+            }
+        }
+        is ChunkSectionsToRender.DrawSeparate -> {
+            val draws = (sections as DrawSeparateAccessor).`vertex$drawsPerLayer`()
+            listOf(ChunkSectionLayer.SOLID, ChunkSectionLayer.CUTOUT).any { layer ->
+                !draws[layer].orEmpty().isEmpty()
+            }
+        }
+        else -> false
     }
 
     private fun descriptor() = RenderPassDescriptor.builder { "vertex-shadow" }.also { builder ->

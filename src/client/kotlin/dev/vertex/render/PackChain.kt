@@ -374,6 +374,7 @@ object PackChain {
         // the vanilla atlas sampler (including without mipmap support).
         val atlasSampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST)
         pass.setUniform("Sampler0", atlas, atlasSampler)
+        TerrainMesh.bindMaterialSamplers(pass)
         staticByName["noisetex"]?.let { pass.setUniform("noisetex", it.view, it.sampler) }
         bindShadowSamplers(pass, sampler)
         bindUniforms(pass)

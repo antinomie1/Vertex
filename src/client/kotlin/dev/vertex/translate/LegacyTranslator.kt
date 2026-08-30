@@ -41,7 +41,7 @@ object LegacyTranslator {
             .replace(Regex("""\bgl_Normal\b"""), "Normal")
             .replace(Regex("""\bgl_Vertex\b"""), "vec4(pos, 1.0)")
             .replace(Regex("""\bftransform\s*\(\s*\)"""), "(ProjMat * ModelViewMat * vec4(pos, 1.0))")
-            .replace(Regex("""\bmc_Entity\b"""), "vec4(float(UV1.x / 2 - 1), float(UV1.x & 1), 0.0, 0.0)")
+            .replace(Regex("""\bmc_Entity\b"""), "vec4(float(UV1.x) / 2.0 - 1.0, float(UV1.x & 1u), 0.0, 0.0)")
             .replace(Regex("""\bat_midBlock\b"""), "((fract(Position) - vec3(0.5)) * 64.0)")
             .replace(Regex("""\bmc_midTexCoord\b"""), "vec4(UV3, 0.0, 1.0)")
             .replace(Regex("""\bat_tangent\b|\btangent\b"""), "vec4(normalize(cross(abs(Normal.y) > 0.99 ? vec3(1, 0, 0) : vec3(0, 1, 0), Normal)), 1.0)")
@@ -77,7 +77,7 @@ object LegacyTranslator {
 layout(location = 0) in vec3 Position;
 layout(location = 1) in vec4 Color;
 layout(location = 2) in vec2 UV0;
-layout(location = 3) in ivec2 UV1;
+layout(location = 3) in uvec2 UV1;
 layout(location = 4) in ivec2 UV2;
 #ifdef MULTIDRAW_TERRAIN
 layout(location = 5) in ivec3 ChunkPosition;
@@ -416,12 +416,26 @@ $outputs
             .replace(Regex("""\bgl_Color\b"""), "Color")
             .replace(Regex("""\bgl_NormalMatrix\b"""), "mat3(1.0)")
             .replace(Regex("""\bgl_Normal\b"""), "Normal")
-            .replace(Regex("""\bmc_Entity\b"""), "vec4(float(UV1.x / 2 - 1), float(UV1.x & 1), 0.0, 0.0)")
+            .replace(Regex("""\bmc_Entity\b"""), "vec4(float(UV1.x) / 2.0 - 1.0, float(UV1.x & 1u), 0.0, 0.0)")
             .replace(Regex("""\bmc_midTexCoord\b"""), if (midTexCoord) "vec4(UV3, 0.0, 1.0)" else "vec4(0.0)")
             .replace(Regex("""\bat_midBlock\b"""), "((fract(Position) - vec3(0.5)) * 64.0)")
             .replace(Regex("""\bat_tangent\b|\btangent\b"""), "vec4(0.0, 0.0, 1.0, 1.0)")
             .let(::modernizeTextureCalls)
             .let(LegacyUniformTranslator::translate)
+        // The shadow pass already provides world-space vertices. Reconstructing
+        // them through pack UBO matrices makes the first depth draw use zeros,
+        // leaving shadowtex0 at its clear value and blackening the whole scene.
+        body = body.replace(
+            Regex("""shadowModelViewInverse\s*\*\s*shadowProjectionInverse\s*\*\s*shadowProjection\s*\*\s*shadowModelView\s*\*\s*vec4\(pos, 1\.0\)"""),
+            "vec4(pos, 1.0)",
+        )
+        // BSL applies its legacy OpenGL depth remap in the shadow vertex shader.
+        // The raster matrix is already converted to Vulkan's 0..1 range, so keep
+        // the same 0.5 + 0.1 * legacyDepth values expected by DistortShadow().
+        body = body.replace(
+            Regex("""gl_Position\.z\s*=\s*gl_Position\.z\s*\*\s*0\.2\s*;"""),
+            "gl_Position.z = gl_Position.z * 0.2 + 0.4;",
+        )
         val main = Regex("""void\s+main\s*\(\s*\)\s*\{""").find(body)
             ?: error("${program.name}: shadow vertex shader has no main()")
         body = body.replaceRange(main.range, main.value + "\n    vec3 pos = Position + (ChunkPosition - CameraBlockPos) + CameraOffset;")
@@ -470,7 +484,7 @@ layout(location = 0) out vec4 shadowColor;
 layout(location=0) in vec3 Position;
 layout(location=1) in vec4 Color;
 layout(location=$uv0) in vec2 UV0;
-layout(location=$uv1) in ivec2 UV1;
+layout(location=$uv1) in uvec2 UV1;
 layout(location=$uv2) in ivec2 UV2;
 ${if (midTexCoord) "#ifdef MULTIDRAW_TERRAIN\nlayout(location=$midMulti) in vec2 UV3;\n#else\nlayout(location=$midBase) in vec2 UV3;\n#endif" else ""}
 #ifdef MULTIDRAW_TERRAIN

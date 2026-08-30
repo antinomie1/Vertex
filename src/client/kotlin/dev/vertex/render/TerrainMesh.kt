@@ -1,8 +1,10 @@
 package dev.vertex.render
 
 import com.mojang.blaze3d.systems.RenderSystem
+import com.mojang.blaze3d.platform.NativeImage
 import com.mojang.blaze3d.vertex.DefaultVertexFormat
 import com.mojang.renderpearl.api.GpuFormat
+import com.mojang.renderpearl.api.commands.RenderPass
 import com.mojang.renderpearl.api.device.GpuDevice
 import com.mojang.renderpearl.api.pipeline.ColorTargetState
 import com.mojang.renderpearl.api.pipeline.BindGroupLayout
@@ -12,12 +14,16 @@ import com.mojang.renderpearl.api.pipeline.CompiledRenderPipeline
 import com.mojang.renderpearl.api.pipeline.RenderPipeline
 import com.mojang.renderpearl.api.pipeline.ShaderSource
 import com.mojang.renderpearl.api.pipeline.ShaderType
+import com.mojang.renderpearl.api.textures.FilterMode
+import com.mojang.renderpearl.api.textures.GpuTexture
+import com.mojang.renderpearl.api.textures.GpuTextureView
 import com.mojang.renderpearl.api.vertex.VertexFormat
 import dev.vertex.Vertex
 import dev.vertex.core.SharedVulkanContext
 import dev.vertex.core.RuntimeDiagnostics
 import dev.vertex.frontend.PackRuntime
 import dev.vertex.frontend.PackSemanticsParser
+import dev.vertex.frontend.BlockMaterialMap
 import dev.vertex.runtime.ProgramFamily
 import dev.vertex.runtime.RenderTier
 import dev.vertex.translate.TerrainRequirementScanner
@@ -46,6 +52,9 @@ object TerrainMesh {
     @Volatile private var separateAo = false
     @Volatile private var noiseSampler = false
     @Volatile private var packSamplers = emptySet<String>()
+    @Volatile private var blockMaterials = BlockMaterialMap.empty()
+    private val materialTextures = HashMap<String, GpuTexture>()
+    private val materialViews = HashMap<String, GpuTextureView>()
 
     private val currentEntityPayload = ThreadLocal<Int>()
     private val currentMidUv = ThreadLocal.withInitial { FloatArray(2) }
@@ -68,6 +77,8 @@ object TerrainMesh {
         separateAo = false
         noiseSampler = false
         packSamplers = emptySet()
+        blockMaterials = BlockMaterialMap.empty()
+        closeMaterialTextures()
         customFormat = format(requirements)
         TerrainCommandCache.invalidate()
     }
@@ -94,9 +105,13 @@ object TerrainMesh {
             val runDir = Minecraft.getInstance().gameDirectory.toPath()
             val packRoot = PackRuntime.root(runDir)
             val terrainProg = dev.vertex.frontend.PackFrontend.loadTerrain(packRoot, PackRuntime.options())
+            blockMaterials = BlockMaterialMap.load(packRoot.resolve("shaders/block.properties")).also {
+                Vertex.log.info("[Vertex] terrain block material map: {} rules", it.size)
+            }
             separateAo = PackSemanticsParser.load(packRoot, PackRuntime.options()).separateAo
             noiseSampler = terrainProg.samplers.contains("noisetex")
             packSamplers = terrainProg.samplers.toSet()
+            createMaterialTextures(device)
             requirements = TerrainRequirementScanner.scan(terrainProg.vertexSource)
             customFormat = format(requirements)
             val translatedVsh = dev.vertex.translate.LegacyTranslator.terrainVertex(terrainProg, separateAo)
@@ -121,6 +136,7 @@ object TerrainMesh {
             )
         } catch (t: Throwable) {
             prepared = null
+            closeMaterialTextures()
             RuntimeDiagnostics.disable(ProgramFamily.TERRAIN_OPAQUE, "terrain pipeline preparation", t)
         }
     }
@@ -157,8 +173,8 @@ object TerrainMesh {
     } }
     @JvmStatic
     fun setCurrentBlock(blockState: net.minecraft.world.level.block.state.BlockState) {
-        val rawId = net.minecraft.world.level.block.Block.getId(blockState)
-        val encoded = ((rawId + 1) shl 1)
+        if (!requirements.entity) return
+        val encoded = ((blockMaterials.id(blockState) + 1) shl 1)
         currentEntityPayload.set(encoded)
     }
 
@@ -167,14 +183,20 @@ object TerrainMesh {
         blockState: net.minecraft.world.level.block.state.BlockState,
         fluidState: net.minecraft.world.level.material.FluidState
     ) {
-        val rawId = net.minecraft.world.level.block.Block.getId(blockState)
-        val encoded = ((rawId + 1) shl 1) or 1
+        if (!requirements.entity) return
+        val encoded = ((blockMaterials.id(blockState) + 1) shl 1) or 1
         currentEntityPayload.set(encoded)
     }
 
     @JvmStatic
     fun clearCurrentBlock() {
         currentEntityPayload.remove()
+    }
+
+    @JvmStatic
+    fun bindMaterialSamplers(pass: RenderPass) {
+        val sampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST)
+        materialViews.forEach { (name, view) -> runCatching { pass.setUniform(name, view, sampler) } }
     }
 
     @JvmStatic
@@ -310,6 +332,34 @@ object TerrainMesh {
         }
     }
 
+    private fun createMaterialTextures(device: GpuDevice) {
+        closeMaterialTextures()
+        // Missing optional pack textures must behave like an unmodified vanilla
+        // surface: flat tangent normal and zero specular/emission data.
+        val pixels = mapOf("normals" to 0xFF8080FF.toInt(), "specular" to 0xFF000000.toInt())
+        val encoder = device.createCommandEncoder()
+        pixels.filterKeys(packSamplers::contains).forEach { (name, pixel) ->
+            val image = NativeImage(1, 1, false)
+            image.setPixel(0, 0, pixel)
+            val texture = device.createTexture(
+                { "vertex-terrain-$name" },
+                GpuTexture.USAGE_TEXTURE_BINDING or GpuTexture.USAGE_COPY_DST,
+                GpuFormat.RGBA8_UNORM, 1, 1, 1, 1,
+            )
+            encoder.writeToTexture(texture, image)
+            image.close()
+            materialTextures[name] = texture
+            materialViews[name] = device.createTextureView(texture)
+        }
+        encoder.submit()
+    }
+
+    private fun closeMaterialTextures() {
+        materialViews.values.forEach { runCatching { it.close() } }
+        materialTextures.values.forEach { runCatching { it.close() } }
+        materialViews.clear(); materialTextures.clear()
+    }
+
     private data class PipelinePair(
         val base: RenderPipeline,
         val multidraw: RenderPipeline,
@@ -326,7 +376,7 @@ object TerrainMesh {
         .addAttribute("Position", GpuFormat.RGB32_FLOAT)
         .addAttribute("Color", GpuFormat.RGBA8_UNORM)
         .addAttribute("UV0", GpuFormat.RG32_FLOAT)
-        .addAttribute("UV1", GpuFormat.RG16_SINT)
+        .addAttribute("UV1", GpuFormat.RG16_UINT)
         .addAttribute("UV2", GpuFormat.RG16_SINT)
         .apply { if (requirements.midTexCoord) addAttribute("UV3", GpuFormat.RG32_FLOAT) }
         .addAttribute("Normal", GpuFormat.RGBA8_SNORM)
