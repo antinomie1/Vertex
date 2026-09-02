@@ -555,7 +555,8 @@ object PackChain {
         val runDir = Minecraft.getInstance().gameDirectory.toPath()
         val packRoot = PackRuntime.root(runDir)
         ShadowRenderer.discover()
-        val loadedPrograms = PackFrontend.loadScreenChain(packRoot, PackRuntime.options())
+        val dimension = PackRuntime.dimension()
+        val loadedPrograms = PackFrontend.loadScreenChain(packRoot, PackRuntime.options(), dimension)
         val programs = loadedPrograms.filterNot {
             ScreenPassOptimizer.isIdentityCopy(it.fragmentSource, it.outputs, it.samplers)
         }
@@ -564,7 +565,7 @@ object PackChain {
         if (programs.size != loadedPrograms.size) dev.vertex.Vertex.log.info(
             "[Vertex] eliminated {} identity screen-pass boundaries", loadedPrograms.size - programs.size,
         )
-        val semantics = PackSemanticsParser.load(packRoot, PackRuntime.options())
+        val semantics = PackSemanticsParser.load(packRoot, PackRuntime.options(), dimension)
         if (!scaleResolved) {
             val decision = RenderScalePolicy.resolve(
                 System.getProperty("vertex.renderScale")?.toFloatOrNull() ?: 1f,

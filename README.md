@@ -7,6 +7,7 @@ Vertex 是一个实验性的 Fabric 客户端模组，目标是在 Minecraft 原
 - 读取目录或 ZIP 格式的光影包，并支持包内绝对路径与相对路径 `#include`。
 - 翻译常见 GLSL 1.20/兼容配置语法、传统内建变量、uniform、sampler 和阶段接口。
 - 接入地形、水体、实体、手持物、粒子、天空、天气、阴影以及 deferred/composite/final 屏幕通道。
+- 按 `dimension.properties` 和标准 `world0` / `world-1` / `world1` 目录选择维度程序，跨维度时自动重建整套管线。
 - 解析 `shaders.properties` 中的渲染目标、纹理、翻转、通道启用表达式和光影选项页面。
 - 按 GPU 能力为不同程序族协商运行级别；单个程序族失败时，其余程序族仍可继续工作。
 - 提供渲染缩放、阴影分辨率、GPU 时间统计、回放哈希和性能基线工具。
@@ -62,6 +63,7 @@ config/vertex-shaders.properties
 | --- | --- |
 | `vertex.pack` | 光影包路径；相对路径从 `shaderpacks` 解析 |
 | `vertex.options` | 逗号分隔的 `名称=值` 覆盖 |
+| `vertex.dimension` | 开发验证时强制使用指定维度标识的程序 |
 | `vertex.backend` | 传递 Minecraft 图形后端参数 |
 | `vertex.validation=true` | 启用 Vulkan Validation |
 | `vertex.quickplay` | 启动后直接进入指定单人存档 |

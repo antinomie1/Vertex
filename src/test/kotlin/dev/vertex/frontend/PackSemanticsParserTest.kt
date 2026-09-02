@@ -1,6 +1,7 @@
 package dev.vertex.frontend
 
 import java.nio.file.Files
+import kotlin.io.path.createDirectories
 import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -50,5 +51,24 @@ class PackSemanticsParserTest {
         val root = Files.createTempDirectory("vertex-semantics-invalid")
         Files.createDirectory(root.resolve("shaders")).resolve("shaders.properties").writeText("separateAo=maybe")
         assertFailsWith<IllegalArgumentException> { PackSemanticsParser.load(root) }
+    }
+
+    @Test
+    fun `isolates render target semantics by dimension`() {
+        val root = Files.createTempDirectory("vertex-semantics-dimension")
+        val shaders = root.resolve("shaders")
+        shaders.resolve("world-1").createDirectories()
+        shaders.resolve("world1").createDirectories()
+        shaders.resolve("world-1/composite.fsh").writeText("const int colortex0Format = RGBA16F;\n")
+        shaders.resolve("world1/composite.fsh").writeText("const int colortex0Format = R32F;\n")
+
+        assertEquals(
+            ColorFormat.RGBA16F,
+            PackSemanticsParser.load(root, dimension = "minecraft:the_nether").colors[0].format,
+        )
+        assertEquals(
+            ColorFormat.R32F,
+            PackSemanticsParser.load(root, dimension = "minecraft:the_end").colors[0].format,
+        )
     }
 }

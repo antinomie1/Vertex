@@ -83,6 +83,8 @@ tasks.withType<JavaExec>().configureEach {
         if (pack.isPresent) jvmArgs("-Dvertex.pack=" + pack.get())
         val options = providers.gradleProperty("vertex.options")
         if (options.isPresent) jvmArgs("-Dvertex.options=" + options.get())
+        val dimension = providers.gradleProperty("vertex.dimension")
+        if (dimension.isPresent) jvmArgs("-Dvertex.dimension=" + dimension.get())
     }
 }
 

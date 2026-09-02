@@ -105,9 +105,11 @@ object ShadowRenderer {
         discovered = true
         val mc = Minecraft.getInstance()
         val root = PackRuntime.root(mc.gameDirectory.toPath())
-        requested = PackFrontend.loadScreenChain(root, PackRuntime.options()).flatMap { it.samplers }
+        requested = PackFrontend.loadScreenChain(root, PackRuntime.options(), PackRuntime.dimension()).flatMap { it.samplers }
             .filter(SHADOW_SAMPLERS::contains).toSet()
-        parseShadowConstants(runCatching { PackFrontend.loadShadow(root, PackRuntime.options())?.vertexSource }.getOrNull())
+        parseShadowConstants(runCatching {
+            PackFrontend.loadShadow(root, PackRuntime.options(), PackRuntime.dimension())?.vertexSource
+        }.getOrNull())
         resolution = System.getProperty("vertex.shadowResolution")?.toIntOrNull() ?: 2048
         require(resolution in 256..8192 && resolution.countOneBits() == 1) {
             "vertex.shadowResolution must be a power of two in 256..8192"
@@ -156,7 +158,7 @@ object ShadowRenderer {
                 { "vertex-shadow-matrix" }, GpuBuffer.USAGE_UNIFORM or GpuBuffer.USAGE_COPY_DST,
                 SHADOW_SLOT_BYTES * SHADOW_SLOTS,
             )
-            val pack = PackFrontend.loadShadow(root, PackRuntime.options())
+            val pack = PackFrontend.loadShadow(root, PackRuntime.options(), PackRuntime.dimension())
             parseShadowConstants(pack?.vertexSource)
             val requirements = pack?.let { dev.vertex.translate.TerrainRequirementScanner.scan(it.vertexSource) }
             val separateAo = PackSemanticsParser.load(root, PackRuntime.options()).separateAo

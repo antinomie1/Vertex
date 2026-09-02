@@ -52,24 +52,42 @@ data class PackSemantics(
 
 /** Reads the shader constants and shaders.properties directives that control render targets. */
 object PackSemanticsParser {
-    fun load(packRoot: Path, options: Map<String, String> = emptyMap()): PackSemantics {
+    fun load(
+        packRoot: Path,
+        options: Map<String, String> = emptyMap(),
+        dimension: String? = null,
+    ): PackSemantics {
         val shaders = packRoot.resolve("shaders")
         val settings = MutableList(16) { ColorBufferSettings() }
         var noiseResolution = 256
-        Files.walk(shaders).use { files ->
-            files.filter { Files.isRegularFile(it) && it.fileName.toString().substringAfterLast('.', "") in SHADER_EXTENSIONS }
-                .sorted().forEach { path ->
-                    LEGACY_GAUX4.find(Files.readString(path))?.groupValues?.get(1)?.let { settings[7] = settings[7].copy(format = ColorFormat.parse(it)) }
-                    val source = runCatching { ShaderPreprocessor(listOf(shaders), options).process(path) }
-                        .getOrElse { Files.readString(path) }
-                    parseShader(source, settings)
-                    NOISE_RESOLUTION.find(source)?.groupValues?.get(1)?.toInt()?.let { noiseResolution = it }
-                }
+        shaderFiles(packRoot, dimension).forEach { path ->
+            LEGACY_GAUX4.find(Files.readString(path))?.groupValues?.get(1)?.let { settings[7] = settings[7].copy(format = ColorFormat.parse(it)) }
+            val source = runCatching { ShaderPreprocessor(listOf(path.parent, shaders).distinct(), options).process(path) }
+                .getOrElse { Files.readString(path) }
+            parseShader(source, settings)
+            NOISE_RESOLUTION.find(source)?.groupValues?.get(1)?.toInt()?.let { noiseResolution = it }
         }
         require(noiseResolution in 1..4096) { "noiseTextureResolution must be in 1..4096" }
         val properties = loadProperties(shaders.resolve("shaders.properties"))
         return PackSemantics(settings, parseFlips(properties), properties.getProperty("texture.noise")?.trim(),
             noiseResolution, parseCustomTextures(properties), properties.boolean("separateAo"))
+    }
+
+    private fun shaderFiles(packRoot: Path, dimension: String?): List<Path> {
+        val shaders = packRoot.resolve("shaders")
+        val shared = Files.walk(shaders).use { files ->
+            files.filter { path ->
+                Files.isRegularFile(path) &&
+                    path.fileName.toString().substringAfterLast('.', "") in SHADER_EXTENSIONS &&
+                    shaders.relativize(path).firstOrNull()?.toString()?.let { !WORLD.matches(it) } == true
+            }.sorted().toList()
+        }
+        val selected = DimensionShaderRoots.selected(packRoot, dimension) ?: return shared
+        val selectedFiles = Files.walk(selected).use { files ->
+            files.filter { Files.isRegularFile(it) && it.fileName.toString().substringAfterLast('.', "") in SHADER_EXTENSIONS }
+                .sorted().toList()
+        }
+        return shared + selectedFiles
     }
 
     private fun parseShader(source: String, settings: MutableList<ColorBufferSettings>) {
@@ -119,6 +137,7 @@ object PackSemanticsParser {
     }
 
     private val SHADER_EXTENSIONS = setOf("vsh", "fsh", "gsh", "csh")
+    private val WORLD = Regex("world-?\\d+")
     private val FORMAT = Regex("""const\s+int\s+(\w+)Format\s*=\s*(\w+)\s*;""")
     private val CLEAR = Regex("""const\s+bool\s+(\w+)Clear\s*=\s*(true|false)\s*;""")
     private val CLEAR_COLOR = Regex("""const\s+vec4\s+(\w+)ClearColor\s*=\s*vec4\s*\(([^)]*)\)\s*;""")

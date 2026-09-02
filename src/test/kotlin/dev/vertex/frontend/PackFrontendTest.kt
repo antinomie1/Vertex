@@ -9,7 +9,7 @@ import kotlin.test.assertEquals
 
 class PackFrontendTest {
     @Test
-    fun `loads dimension programs with pack-root includes`() {
+    fun `loads requested dimension programs with pack-root includes`() {
         val pack = Files.createTempDirectory("vertex-pack-front")
         val shaders = pack.resolve("shaders")
         val world = shaders.resolve("world-1")
@@ -23,7 +23,7 @@ class PackFrontendTest {
             "#version 120\nvoid main() { gl_FragColor = vec4(shared, 1.0); }\n",
         )
 
-        val programs = PackFrontend.loadScreenChain(pack)
+        val programs = PackFrontend.loadScreenChain(pack, dimension = "minecraft:the_nether")
         assertEquals(listOf("composite"), programs.map(LoadedProgram::name))
         assertContains(programs.single().vertexSource, "vec3 shared")
     }
@@ -41,6 +41,40 @@ class PackFrontendTest {
         }
         assertEquals(listOf("composite"), PackFrontend.loadScreenChain(pack).map(LoadedProgram::name))
         assertContains(PackFrontend.loadScreenChain(pack).single().vertexSource, "overworld")
+    }
+
+    @Test
+    fun `selects programs for the active vanilla dimension`() {
+        val pack = Files.createTempDirectory("vertex-pack-active-dimension")
+        val shaders = pack.resolve("shaders")
+        for ((world, marker) in mapOf("world0" to "overworld", "world-1" to "nether", "world1" to "end")) {
+            val root = shaders.resolve(world).createDirectories()
+            root.resolve("composite.vsh").writeText("vec3 $marker;\nvoid main() { gl_Position = vec4(0.0); }\n")
+            root.resolve("composite.fsh").writeText("void main() { gl_FragColor = vec4(1.0); }\n")
+        }
+
+        assertContains(
+            PackFrontend.loadScreenChain(pack, dimension = "minecraft:the_nether").single().vertexSource,
+            "nether",
+        )
+        assertContains(
+            PackFrontend.loadScreenChain(pack, dimension = "minecraft:the_end").single().vertexSource,
+            "end",
+        )
+    }
+
+    @Test
+    fun `honors custom and wildcard dimension mappings`() {
+        val pack = Files.createTempDirectory("vertex-pack-custom-dimension")
+        val shaders = pack.resolve("shaders").createDirectories()
+        shaders.resolve("dimension.properties").writeText(
+            "dimension.world7=example:moon\ndimension.world0=*\n",
+        )
+        shaders.resolve("world7").createDirectories()
+        shaders.resolve("world0").createDirectories()
+
+        assertEquals("world7", DimensionShaderRoots.selected(pack, "example:moon")?.fileName.toString())
+        assertEquals("world0", DimensionShaderRoots.selected(pack, "example:unknown")?.fileName.toString())
     }
 
     @Test

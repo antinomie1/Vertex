@@ -12,6 +12,7 @@ object PackRuntime {
     private var archive: FileSystem? = null
     private var configFile: Path? = null
     @Volatile private var enabled = true
+    @Volatile private var dimension = DimensionShaderRoots.OVERWORLD
 
     data class Settings(
         val enabled: Boolean,
@@ -24,6 +25,18 @@ object PackRuntime {
     fun root(gameDir: Path): Path = root ?: select(gameDir).also { root = it }
 
     fun isEnabled() = enabled
+
+    fun dimension() = System.getProperty("vertex.dimension")?.takeIf(String::isNotBlank) ?: dimension
+
+    /** Returns true only when render programs must be rebuilt for a new dimension. */
+    @Synchronized
+    fun activateDimension(identifier: String?): Boolean {
+        if (System.getProperty("vertex.dimension")?.isNotBlank() == true) return false
+        val next = identifier?.takeIf(String::isNotBlank) ?: DimensionShaderRoots.OVERWORLD
+        if (next == dimension) return false
+        dimension = next
+        return true
+    }
 
     @Synchronized
     fun initialize(gameDir: Path) {

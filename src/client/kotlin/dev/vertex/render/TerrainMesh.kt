@@ -107,12 +107,13 @@ object TerrainMesh {
         try {
             val runDir = Minecraft.getInstance().gameDirectory.toPath()
             val packRoot = PackRuntime.root(runDir)
-            val terrainProg = dev.vertex.frontend.PackFrontend.loadTerrain(packRoot, PackRuntime.options())
-            val waterProg = dev.vertex.frontend.PackFrontend.loadWater(packRoot, PackRuntime.options())
+            val dimension = PackRuntime.dimension()
+            val terrainProg = dev.vertex.frontend.PackFrontend.loadTerrain(packRoot, PackRuntime.options(), dimension)
+            val waterProg = dev.vertex.frontend.PackFrontend.loadWater(packRoot, PackRuntime.options(), dimension)
             blockMaterials = BlockMaterialMap.load(packRoot.resolve("shaders/block.properties")).also {
                 Vertex.log.info("[Vertex] terrain block material map: {} rules", it.size)
             }
-            separateAo = PackSemanticsParser.load(packRoot, PackRuntime.options()).separateAo
+            separateAo = PackSemanticsParser.load(packRoot, PackRuntime.options(), dimension).separateAo
             noiseSampler = (terrainProg.samplers + waterProg?.samplers.orEmpty()).contains("noisetex")
             packSamplers = (terrainProg.samplers + waterProg?.samplers.orEmpty()).toSet()
             createMaterialTextures(device)

@@ -21,8 +21,12 @@ data class LoadedProgram(
 )
 
 object PackFrontend {
-    fun loadScreenChain(packRoot: Path, options: Map<String, String> = emptyMap()): List<LoadedProgram> {
-        val (sh, names) = shaderRoots(packRoot).asSequence()
+    fun loadScreenChain(
+        packRoot: Path,
+        options: Map<String, String> = emptyMap(),
+        dimension: String? = null,
+    ): List<LoadedProgram> {
+        val (sh, names) = DimensionShaderRoots.ordered(packRoot, dimension).asSequence()
             .map { it to screenPrograms(packRoot, it, options) }
             .firstOrNull { (_, names) -> names.isNotEmpty() }
             ?: throw IllegalArgumentException(
@@ -45,8 +49,8 @@ object PackFrontend {
         }
     }
 
-    fun loadComposite(packRoot: Path, options: Map<String, String> = emptyMap()): LoadedProgram =
-        loadScreenChain(packRoot, options).first()
+    fun loadComposite(packRoot: Path, options: Map<String, String> = emptyMap(), dimension: String? = null): LoadedProgram =
+        loadScreenChain(packRoot, options, dimension).first()
 
     private fun load(sh: Path, name: String, options: Map<String, String>): LoadedProgram {
         val vsh = normalizeInterfaces(ShaderPreprocessor(includeRoots(sh), options).process(sh.resolve("$name.vsh")), true)
@@ -66,8 +70,8 @@ object PackFrontend {
             LegacyUniformTranslator.uniforms(vsh) + LegacyUniformTranslator.uniforms(fsh))
     }
 
-    fun loadTerrain(packRoot: Path, options: Map<String, String> = emptyMap()): LoadedProgram {
-        val sh = shaderRoots(packRoot).firstOrNull { hasPair(it, "gbuffers_terrain") }
+    fun loadTerrain(packRoot: Path, options: Map<String, String> = emptyMap(), dimension: String? = null): LoadedProgram {
+        val sh = DimensionShaderRoots.ordered(packRoot, dimension).firstOrNull { hasPair(it, "gbuffers_terrain") }
             ?: packRoot.resolve("shaders")
         val vshFile = sh.resolve("gbuffers_terrain.vsh")
         val fshFile = sh.resolve("gbuffers_terrain.fsh")
@@ -78,41 +82,46 @@ object PackFrontend {
         return LoadedProgram("gbuffers_terrain", vsh, fsh, null, samplers, outputs(fsh), emptySet())
     }
 
-    fun loadWater(packRoot: Path, options: Map<String, String> = emptyMap()): LoadedProgram? =
-        loadPair(packRoot, listOf("gbuffers_water", "gbuffers_translucent"), options)
+    fun loadWater(packRoot: Path, options: Map<String, String> = emptyMap(), dimension: String? = null): LoadedProgram? =
+        loadPair(packRoot, listOf("gbuffers_water", "gbuffers_translucent"), options, dimension)
 
     /**
      * Loads the shared entity/hand program used by the dynamic RenderType bridge.
      * Iris packs use both singular and plural spellings, so resolve aliases once
      * here instead of making the renderer probe the filesystem on every draw.
      */
-    fun loadDynamic(packRoot: Path, options: Map<String, String> = emptyMap()): LoadedProgram? {
+    fun loadDynamic(packRoot: Path, options: Map<String, String> = emptyMap(), dimension: String? = null): LoadedProgram? {
         return loadPair(
             packRoot,
             listOf("gbuffers_entities", "gbuffers_entity", "gbuffers_hand", "gbuffers_textured_lit", "gbuffers_textured", "gbuffers_basic"),
-            options,
+            options, dimension,
         )
     }
 
-    fun loadParticle(packRoot: Path, options: Map<String, String> = emptyMap()): LoadedProgram? =
-        loadPair(packRoot, listOf("gbuffers_particles", "gbuffers_particle"), options)
+    fun loadParticle(packRoot: Path, options: Map<String, String> = emptyMap(), dimension: String? = null): LoadedProgram? =
+        loadPair(packRoot, listOf("gbuffers_particles", "gbuffers_particle"), options, dimension)
 
-    fun loadSky(packRoot: Path, options: Map<String, String> = emptyMap()): LoadedProgram? =
-        loadPair(packRoot, listOf("gbuffers_skybasic", "gbuffers_sky"), options)
+    fun loadSky(packRoot: Path, options: Map<String, String> = emptyMap(), dimension: String? = null): LoadedProgram? =
+        loadPair(packRoot, listOf("gbuffers_skybasic", "gbuffers_sky"), options, dimension)
 
-    fun loadWeather(packRoot: Path, options: Map<String, String> = emptyMap()): LoadedProgram? =
-        loadPair(packRoot, listOf("gbuffers_weather", "gbuffers_weather_basic"), options)
+    fun loadWeather(packRoot: Path, options: Map<String, String> = emptyMap(), dimension: String? = null): LoadedProgram? =
+        loadPair(packRoot, listOf("gbuffers_weather", "gbuffers_weather_basic"), options, dimension)
 
-    fun loadShadow(packRoot: Path, options: Map<String, String> = emptyMap()): LoadedProgram? {
-        val match = shaderRoots(packRoot).asSequence()
+    fun loadShadow(packRoot: Path, options: Map<String, String> = emptyMap(), dimension: String? = null): LoadedProgram? {
+        val match = DimensionShaderRoots.ordered(packRoot, dimension).asSequence()
             .flatMap { sh -> listOf("shadow", "shadow_solid").asSequence().map { sh to it } }
             .firstOrNull { (sh, name) -> hasPair(sh, name) } ?: return null
         val (sh, name) = match
         return load(sh, name, options)
     }
 
-    private fun loadPair(packRoot: Path, aliases: List<String>, options: Map<String, String>): LoadedProgram? {
-        val match = shaderRoots(packRoot).asSequence()
+    private fun loadPair(
+        packRoot: Path,
+        aliases: List<String>,
+        options: Map<String, String>,
+        dimension: String?,
+    ): LoadedProgram? {
+        val match = DimensionShaderRoots.ordered(packRoot, dimension).asSequence()
             .flatMap { sh -> aliases.asSequence().map { sh to it } }
             .firstOrNull { (sh, stem) -> hasPair(sh, stem) } ?: return null
         val (sh, stem) = match
@@ -120,20 +129,6 @@ object PackFrontend {
         val fsh = normalizeInterfaces(ShaderPreprocessor(includeRoots(sh), options).process(sh.resolve("$stem.fsh")), false)
         val samplers = SAMPLER.findAll(fsh).map { it.groupValues[1] }.toList()
         return LoadedProgram(stem, vsh, fsh, null, samplers, outputs(fsh), emptySet())
-    }
-
-    private fun shaderRoots(packRoot: Path): List<Path> {
-        val shaders = packRoot.resolve("shaders")
-        if (!Files.isDirectory(shaders)) return listOf(shaders)
-        val worlds = Files.list(shaders).use { children ->
-            children.filter { Files.isDirectory(it) && it.fileName.toString().startsWith("world") }
-                .sorted().toList()
-        }
-        // The client starts before a level is attached, so world0 is the only
-        // safe default for packs that provide dimension-specific shader roots.
-        // Keep the pack-root fallback and all other dimensions available.
-        val overworld = worlds.firstOrNull { it.fileName.toString() == "world0" }
-        return listOfNotNull(overworld, shaders) + worlds.filterNot { it == overworld }
     }
 
     private fun hasPair(sh: Path, stem: String) =

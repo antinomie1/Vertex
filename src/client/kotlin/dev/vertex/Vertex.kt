@@ -38,16 +38,37 @@ object Vertex : ClientModInitializer {
     @JvmStatic
     fun reloadShaders(settings: PackRuntime.Settings) {
         val minecraft = Minecraft.getInstance()
-        DynamicRenderer.close()
-        PackChain.close()
-        ShadowRenderer.close()
-        TerrainMesh.close()
+        closeRenderers()
         PackRuntime.apply(minecraft.gameDirectory.toPath(), settings)
+        PackRuntime.activateDimension(minecraft.level?.dimension()?.identifier()?.toString())
         SharedVulkanContext.resetPackHealth()
         if (settings.enabled) {
             PackChain.prepare()
             DynamicRenderer.prepare()
         }
+        rebuildGeometry(minecraft)
+    }
+
+    @JvmStatic
+    fun switchDimension(identifier: String) {
+        if (!PackRuntime.activateDimension(identifier) || !PackRuntime.isEnabled()) return
+        val minecraft = Minecraft.getInstance()
+        log.info("[Vertex] shader dimension changed: {}; rebuilding pack pipelines", identifier)
+        closeRenderers()
+        SharedVulkanContext.resetPackHealth()
+        PackChain.prepare()
+        DynamicRenderer.prepare()
+        rebuildGeometry(minecraft)
+    }
+
+    private fun closeRenderers() {
+        DynamicRenderer.close()
+        PackChain.close()
+        ShadowRenderer.close()
+        TerrainMesh.close()
+    }
+
+    private fun rebuildGeometry(minecraft: Minecraft) {
         minecraft.level?.let { level ->
             dev.vertex.render.LevelRendererBridge.rebuildGeometry(
                 minecraft.levelRenderer,

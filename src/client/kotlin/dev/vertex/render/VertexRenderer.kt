@@ -8,6 +8,7 @@ import dev.vertex.frontend.PackRuntime
 import dev.vertex.runtime.ProgramFamily
 import dev.vertex.runtime.RenderTier
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
 import net.minecraft.client.Minecraft
 
 /**
@@ -18,6 +19,9 @@ object VertexRenderer {
     private var frames = 0L
     fun register() {
         Vertex.log.info("[Vertex] register(): wiring seams")
+        ClientTickEvents.END_CLIENT_TICK.register { client ->
+            client.level?.dimension()?.identifier()?.toString()?.let(Vertex::switchDimension)
+        }
         LevelRenderEvents.END_MAIN.register { _ ->
             try {
                 frames++

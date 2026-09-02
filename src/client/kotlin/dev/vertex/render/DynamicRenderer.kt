@@ -73,7 +73,8 @@ object DynamicRenderer {
             val gpu = RenderSystem.getDevice()
             device = gpu
             prepared = true
-            val dynamic = PackFrontend.loadDynamic(root, PackRuntime.options())
+            val dimension = PackRuntime.dimension()
+            val dynamic = PackFrontend.loadDynamic(root, PackRuntime.options(), dimension)
             if (dynamic == null) {
                 disable("no gbuffers_entities shader pair")
             } else {
@@ -132,7 +133,7 @@ object DynamicRenderer {
                     }.onFailure { Vertex.log.debug("[Vertex] block shader rejected; retaining vanilla path", it) }
                 }.onFailure { disable("dynamic pipeline preparation", it) }
             }
-            compileOptionalSceneFamilies(gpu, root)
+            compileOptionalSceneFamilies(gpu, root, dimension)
         } catch (t: Throwable) {
             disable("dynamic pipeline preparation", t)
         }
@@ -242,12 +243,15 @@ object DynamicRenderer {
         return failures
     }
 
-    private fun compileOptionalSceneFamilies(gpu: GpuDevice, root: java.nio.file.Path) {
+    private fun compileOptionalSceneFamilies(gpu: GpuDevice, root: java.nio.file.Path, dimension: String) {
         val options = PackRuntime.options()
         var skyArmed = false
         var particleArmed = false
         var weatherArmed = false
-        PackFrontend.loadSky(root, options)?.let { program ->
+        val skyProgram = PackFrontend.loadSky(root, options, dimension)
+        val particleProgram = PackFrontend.loadParticle(root, options, dimension)
+        val weatherProgram = PackFrontend.loadWeather(root, options, dimension)
+        skyProgram?.let { program ->
             runCatching {
                 val source = shaderSource(
                     skyShaderId,
@@ -283,7 +287,7 @@ object DynamicRenderer {
                 skyArmed = skyArmed || pipelines.containsKey(RenderPipelines.STARS)
             }.onFailure { Vertex.log.debug("[Vertex] stars shader rejected; retaining vanilla path", it) }
         }
-        PackFrontend.loadParticle(root, options)?.let { program ->
+        particleProgram?.let { program ->
             runCatching {
                 val source = shaderSource(
                     particleShaderId,
@@ -296,7 +300,7 @@ object DynamicRenderer {
                 if (skipped > 0) Vertex.log.debug("[Vertex] skipped {} particle pipelines", skipped)
             }.onFailure { Vertex.log.warn("[Vertex] particle shader rejected; retaining vanilla path", it) }
         }
-        PackFrontend.loadWeather(root, options)?.let { program ->
+        weatherProgram?.let { program ->
             runCatching {
                 val source = shaderSource(
                     particleShaderId,
@@ -309,7 +313,9 @@ object DynamicRenderer {
                 if (skipped > 0) Vertex.log.debug("[Vertex] skipped {} weather pipelines", skipped)
             }.onFailure { Vertex.log.warn("[Vertex] weather shader rejected; retaining vanilla path", it) }
         }
-        if (!skyArmed || (!particleArmed && !weatherArmed)) {
+        if (skyProgram != null && !skyArmed || particleProgram != null && !particleArmed ||
+            weatherProgram != null && !weatherArmed
+        ) {
             SharedVulkanContext.attach().health.downgrade(
                 ProgramFamily.SKY_WEATHER,
                 RenderTier.TIER_1,
