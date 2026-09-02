@@ -12,14 +12,21 @@ class PackUniformCatalogTest {
             "uniform float viewWidth;\nuniform vec3 cameraPosition;\nvoid main() {}",
         )
         assertContains(translated, "uniform VertexPackUniforms")
+        assertContains(translated, "float viewWidth;")
+        assertContains(translated, "float vertexUniform_timeAngle;")
         assertEquals(0, "uniform float viewWidth".toRegex().findAll(translated).count())
         assertEquals(setOf("viewWidth", "cameraPosition"),
             LegacyUniformTranslator.uniforms("uniform float viewWidth; uniform vec3 cameraPosition;"))
     }
 
     @Test
-    fun `rejects unknown or mistyped uniforms before GPU compilation`() {
-        assertFailsWith<IllegalArgumentException> { LegacyUniformTranslator.translate("uniform float mystery;") }
+    fun `gives custom uniforms safe fallbacks but rejects mistyped builtins`() {
+        val translated = LegacyUniformTranslator.translate(
+            "uniform float mystery; uniform bool packFlag = true; uniform vec3 view_light_dir;",
+        )
+        assertContains(translated, "float mystery = 0.0;")
+        assertContains(translated, "bool packFlag = true;")
+        assertContains(translated, "vec3 view_light_dir = normalize(shadowLightPosition);")
         assertFailsWith<IllegalArgumentException> { LegacyUniformTranslator.translate("uniform int viewWidth;") }
     }
 
@@ -39,5 +46,16 @@ class PackUniformCatalogTest {
         assertEquals(setOf("near", "far", "timeAngle"), LegacyUniformTranslator.uniforms(
             "uniform float near, far; uniform float timeAngle;",
         ))
+    }
+
+    @Test
+    fun `translates legacy fog state without exposing unrelated names`() {
+        val translated = LegacyUniformTranslator.translate(
+            "uniform float far; float fog = (far - gl_Fog.start) * gl_Fog.scale;",
+        )
+        assertContains(translated, "float fogStart;")
+        assertContains(translated, "float fogEnd;")
+        assertContains(translated, "float vertexUniform_timeAngle;")
+        assertContains(translated, "(1.0 / max(fogEnd - fogStart, 0.0001))")
     }
 }

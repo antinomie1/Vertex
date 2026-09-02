@@ -10,8 +10,8 @@ class ShaderPreprocessor(
     private val roots = roots.map { it.toAbsolutePath().normalize() }
     private val options = defines.toMap()
     private val optionNames = defines.keys
-    private val symbols = defines.toMutableMap()
-    private val objectMacros = defines.toMutableMap()
+    private val symbols = (STANDARD_DEFINES + defines).toMutableMap()
+    private val objectMacros = (STANDARD_DEFINES + defines).toMutableMap()
 
     init { require(this.roots.isNotEmpty()) }
 
@@ -22,7 +22,7 @@ class ShaderPreprocessor(
         stack.addLast(file)
         val output = StringBuilder()
         val active = ArrayDeque<Conditional>()
-        val lines = Files.readAllLines(file)
+        val lines = continuedLines(Files.readAllLines(file))
         lines.forEachIndexed { index, raw ->
             val line = index + 1
             val directive = DIRECTIVE.matchEntire(raw)?.destructured
@@ -44,17 +44,22 @@ class ShaderPreprocessor(
             when (name) {
                 "if", "ifdef", "ifndef" -> {
                     val parent = active.all { it.enabled }
-                    val condition = when (name) {
-                        "ifdef" -> isDefined(tail)
-                        "ifndef" -> !isDefined(tail)
-                        else -> Expression(tail, symbols, ::isDefined).evaluate()
+                    val conditionSource = expressionTail(tail)
+                    // Do not evaluate nested expressions inside an inactive
+                    // branch. C preprocessors still balance the directives,
+                    // but syntax in a branch excluded by its parent is inert.
+                    val condition = parent && when (name) {
+                        "ifdef" -> isDefined(conditionSource)
+                        "ifndef" -> !isDefined(conditionSource)
+                        else -> evaluate(file, line, conditionSource)
                     }
                     active.addLast(Conditional(parent, parent && condition, condition))
                     output.appendLine()
                 }
                 "elif" -> active.replaceLast(file, line) { current ->
-                    val condition = !current.branchTaken && Expression(tail, symbols, ::isDefined).evaluate()
-                    current.copy(enabled = current.parentEnabled && condition, branchTaken = current.branchTaken || condition)
+                    val condition = current.parentEnabled && !current.branchTaken &&
+                        evaluate(file, line, expressionTail(tail))
+                    current.copy(enabled = condition, branchTaken = current.branchTaken || condition)
                 }.also { output.appendLine() }
                 "else" -> active.replaceLast(file, line) { current ->
                     current.copy(enabled = current.parentEnabled && !current.branchTaken, branchTaken = true)
@@ -134,6 +139,35 @@ class ShaderPreprocessor(
     private fun isDefined(name: String): Boolean = name in symbols &&
         (name !in optionNames || symbols[name]?.equals("false", ignoreCase = true) != true)
 
+    private fun expressionTail(value: String): String = value
+        .substringBefore("//")
+        .replace(Regex("/\\*.*?\\*/"), " ")
+        .trim()
+
+    /** Joins C-preprocessor continuations while retaining one output line per source line. */
+    private fun continuedLines(source: List<String>): List<String> {
+        val lines = source.toMutableList()
+        var index = 0
+        while (index < lines.size) {
+            var combined = lines[index]
+            var next = index + 1
+            while (combined.trimEnd().endsWith('\\') && next < lines.size) {
+                combined = combined.trimEnd().dropLast(1) + " " + lines[next].trimStart()
+                lines[next] = ""
+                next++
+            }
+            lines[index] = combined
+            index = next
+        }
+        return lines
+    }
+
+    private fun evaluate(file: Path, line: Int, source: String): Boolean = try {
+        Expression(source, symbols, ::isDefined).evaluate()
+    } catch (failure: RuntimeException) {
+        fail(file, line, "invalid #if expression '$source': ${failure.message}")
+    }
+
     private fun stripComments(source: String): String {
         val out = StringBuilder(source.length)
         var index = 0
@@ -178,7 +212,38 @@ class ShaderPreprocessor(
             """^(\s*(?:const\s+)?[A-Za-z_]\w*\s+)([A-Za-z_]\w*)(\s*=\s*)([^;]+)(;.*)$"""
         )
         private val DIRECTIVE_COMMENT = Regex("""\s*(?:DRAWBUFFERS|RENDERTARGETS)\s*:""")
+        private val STANDARD_DEFINES = mapOf(
+            "MC_VERSION" to "12603",
+            "MC_GL_VERSION" to "460",
+            "MC_GLSL_VERSION" to "460",
+            "MC_HAND_DEPTH" to "0.125",
+            "MC_RENDER_QUALITY" to "1.0",
+            "MC_SHADOW_QUALITY" to "1.0",
+            "MC_RENDER_STAGE_NONE" to "0",
+            "MC_RENDER_STAGE_SKY" to "1",
+            "MC_RENDER_STAGE_SUNSET" to "2",
+            "MC_RENDER_STAGE_CUSTOM_SKY" to "3",
+            "MC_RENDER_STAGE_SUN" to "4",
+            "MC_RENDER_STAGE_MOON" to "5",
+            "MC_RENDER_STAGE_STARS" to "6",
+            "MC_RENDER_STAGE_VOID" to "7",
+            "MC_RENDER_STAGE_TERRAIN_SOLID" to "8",
+            "MC_RENDER_STAGE_TERRAIN_CUTOUT_MIPPED" to "9",
+            "MC_RENDER_STAGE_TERRAIN_CUTOUT" to "10",
+            "MC_RENDER_STAGE_TERRAIN_TRANSLUCENT" to "17",
+            "IS_IRIS" to "1",
+            "IRIS_VERSION" to "10800",
+        )
     }
+}
+
+/** Shared evaluator for shaders.properties program.enabled expressions. */
+object ShaderExpression {
+    fun evaluate(source: String, symbols: Map<String, String>): Boolean = Expression(
+        source.substringBefore("//").trim(),
+        symbols,
+        { name -> name in symbols && symbols[name]?.equals("false", ignoreCase = true) != true },
+    ).evaluate()
 }
 
 private inline fun <T> ArrayDeque<T>.replaceLast(file: Path, line: Int, transform: (T) -> T) {
@@ -190,48 +255,190 @@ private class Expression(
     source: String,
     private val symbols: Map<String, String>,
     private val isDefined: (String) -> Boolean,
+    private val resolving: MutableSet<String> = mutableSetOf(),
 ) {
-    private val tokens = Regex("defined|[A-Za-z_]\\w*|0[xX][0-9a-fA-F]+|\\d+|&&|\\|\\||==|!=|<=|>=|[()!<>-]")
-        .findAll(source).map { it.value }.toList()
+    private val tokens = tokenize(source)
     private var at = 0
 
     fun evaluate(): Boolean {
-        val result = or()
+        val result = or(true)
         require(at == tokens.size) { "invalid preprocessor expression near '${tokens.drop(at).joinToString(" ")}'" }
         return result != 0L
     }
 
-    private fun or(): Long { var v = and(); while (take("||")) { val r = and(); v = bool(v != 0L || r != 0L) }; return v }
-    private fun and(): Long { var v = equality(); while (take("&&")) { val r = equality(); v = bool(v != 0L && r != 0L) }; return v }
-    private fun equality(): Long {
-        var v = relation()
-        while (true) v = when { take("==") -> bool(v == relation()); take("!=") -> bool(v != relation()); else -> return v }
+    private fun numeric(): Long {
+        val result = or(true)
+        require(at == tokens.size) { "invalid macro expression near '${tokens.drop(at).joinToString(" ")}'" }
+        return result
     }
-    private fun relation(): Long {
-        var v = unary()
-        while (true) v = when {
-            take("<") -> bool(v < unary()); take("<=") -> bool(v <= unary())
-            take(">") -> bool(v > unary()); take(">=") -> bool(v >= unary()); else -> return v
-        }
-    }
-    private fun unary(): Long = when {
-        take("!") -> bool(unary() == 0L)
-        take("-") -> -unary()
-        take("defined") -> {
-            val wrapped = take("("); val name = next(); if (wrapped) require(take(")")); bool(isDefined(name))
-        }
-        take("(") -> or().also { require(take(")")) }
-        else -> value(next())
-    }
-    private fun value(token: String): Long = literal(token) ?: symbols[token]?.let(::literal) ?: 0L
 
-    private fun literal(token: String): Long? = when {
-        token.equals("true", ignoreCase = true) -> 1L
-        token.equals("false", ignoreCase = true) -> 0L
-        token.startsWith("0x", ignoreCase = true) -> token.substring(2).toLongOrNull(16)
-        else -> token.toLongOrNull()
+    private fun or(evaluate: Boolean): Long {
+        var value = and(evaluate)
+        while (take("||")) {
+            val right = and(evaluate && value == 0L)
+            if (evaluate) value = bool(value != 0L || right != 0L)
+        }
+        return value
     }
+
+    private fun and(evaluate: Boolean): Long {
+        var value = bitwiseOr(evaluate)
+        while (take("&&")) {
+            val right = bitwiseOr(evaluate && value != 0L)
+            if (evaluate) value = bool(value != 0L && right != 0L)
+        }
+        return value
+    }
+
+    private fun bitwiseOr(evaluate: Boolean): Long {
+        var value = bitwiseXor(evaluate)
+        while (take("|")) {
+            val right = bitwiseXor(evaluate)
+            if (evaluate) value = value or right
+        }
+        return value
+    }
+
+    private fun bitwiseXor(evaluate: Boolean): Long {
+        var value = bitwiseAnd(evaluate)
+        while (take("^")) {
+            val right = bitwiseAnd(evaluate)
+            if (evaluate) value = value xor right
+        }
+        return value
+    }
+
+    private fun bitwiseAnd(evaluate: Boolean): Long {
+        var value = equality(evaluate)
+        while (take("&")) {
+            val right = equality(evaluate)
+            if (evaluate) value = value and right
+        }
+        return value
+    }
+
+    private fun equality(evaluate: Boolean): Long {
+        var value = relation(evaluate)
+        while (true) value = when {
+            take("==") -> relation(evaluate).let { if (evaluate) bool(value == it) else 0L }
+            take("!=") -> relation(evaluate).let { if (evaluate) bool(value != it) else 0L }
+            else -> return value
+        }
+    }
+
+    private fun relation(evaluate: Boolean): Long {
+        var value = shift(evaluate)
+        while (true) value = when {
+            take("<") -> shift(evaluate).let { if (evaluate) bool(value < it) else 0L }
+            take("<=") -> shift(evaluate).let { if (evaluate) bool(value <= it) else 0L }
+            take(">") -> shift(evaluate).let { if (evaluate) bool(value > it) else 0L }
+            take(">=") -> shift(evaluate).let { if (evaluate) bool(value >= it) else 0L }
+            else -> return value
+        }
+    }
+
+    private fun shift(evaluate: Boolean): Long {
+        var value = addition(evaluate)
+        while (true) value = when {
+            take("<<") -> addition(evaluate).let { if (evaluate) value shl (it.toInt() and 63) else 0L }
+            take(">>") -> addition(evaluate).let { if (evaluate) value shr (it.toInt() and 63) else 0L }
+            else -> return value
+        }
+    }
+
+    private fun addition(evaluate: Boolean): Long {
+        var value = multiplication(evaluate)
+        while (true) value = when {
+            take("+") -> multiplication(evaluate).let { if (evaluate) value + it else 0L }
+            take("-") -> multiplication(evaluate).let { if (evaluate) value - it else 0L }
+            else -> return value
+        }
+    }
+
+    private fun multiplication(evaluate: Boolean): Long {
+        var value = unary(evaluate)
+        while (true) value = when {
+            take("*") -> unary(evaluate).let { if (evaluate) value * it else 0L }
+            take("/") -> unary(evaluate).let {
+                if (!evaluate) 0L else {
+                    require(it != 0L) { "division by zero" }
+                    value / it
+                }
+            }
+            take("%") -> unary(evaluate).let {
+                if (!evaluate) 0L else {
+                    require(it != 0L) { "division by zero" }
+                    value % it
+                }
+            }
+            else -> return value
+        }
+    }
+
+    private fun unary(evaluate: Boolean): Long = when {
+        take("!") -> unary(evaluate).let { if (evaluate) bool(it == 0L) else 0L }
+        take("~") -> unary(evaluate).let { if (evaluate) it.inv() else 0L }
+        take("+") -> unary(evaluate)
+        take("-") -> unary(evaluate).let { if (evaluate) -it else 0L }
+        take("defined") -> {
+            val wrapped = take("(")
+            val name = next()
+            require(IDENTIFIER.matches(name)) { "defined() expects an identifier" }
+            if (wrapped) require(take(")"))
+            if (evaluate) bool(isDefined(name)) else 0L
+        }
+        take("(") -> or(evaluate).also { require(take(")")) }
+        else -> if (evaluate) value(next()) else next().let { 0L }
+    }
+
+    private fun value(token: String): Long {
+        literal(token)?.let { return it }
+        val replacement = symbols[token]?.trim() ?: return 0L
+        if (!IDENTIFIER.matches(token) || !resolving.add(token)) return 0L
+        return try {
+            literal(replacement) ?: Expression(replacement, symbols, isDefined, resolving).numeric()
+        } finally {
+            resolving.remove(token)
+        }
+    }
+
+    private fun literal(token: String): Long? {
+        if (token.equals("true", ignoreCase = true)) return 1L
+        if (token.equals("false", ignoreCase = true)) return 0L
+        val value = token.trimEnd { it in "uUlLfF" }
+        return when {
+            value.startsWith("0x", ignoreCase = true) -> value.substring(2).toLongOrNull(16)
+            value.startsWith("0b", ignoreCase = true) -> value.substring(2).toLongOrNull(2)
+            value.contains('.') || value.contains('e', true) -> value.toDoubleOrNull()?.toLong()
+            value.length > 1 && value.startsWith('0') -> value.substring(1).toLongOrNull(8)
+            else -> value.toLongOrNull()
+        }
+    }
+
     private fun next(): String = tokens.getOrNull(at++) ?: error("unexpected end of preprocessor expression")
     private fun take(token: String): Boolean = tokens.getOrNull(at) == token && (++at > 0)
     private fun bool(value: Boolean) = if (value) 1L else 0L
+
+    private companion object {
+        val IDENTIFIER = Regex("""[A-Za-z_]\w*""")
+        val TOKEN = Regex(
+            """0[xX][0-9a-fA-F]+[uUlL]*|0[bB][01]+[uUlL]*|(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?[uUlLfF]*|[A-Za-z_]\w*|&&|\|\||==|!=|<=|>=|<<|>>|[()!~<>+*/%&^|?:-]""",
+        )
+
+        fun tokenize(source: String): List<String> {
+            val result = mutableListOf<String>()
+            var index = 0
+            while (index < source.length) {
+                if (source[index].isWhitespace()) {
+                    index++
+                    continue
+                }
+                val match = TOKEN.matchAt(source, index)
+                    ?: throw IllegalArgumentException("unexpected token '${source.substring(index).take(16)}'")
+                result += match.value
+                index = match.range.last + 1
+            }
+            return result
+        }
+    }
 }

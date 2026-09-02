@@ -6,6 +6,7 @@ import dev.vertex.render.ShadowRenderer
 import dev.vertex.render.TerrainMesh
 import dev.vertex.render.DynamicRenderer
 import dev.vertex.frontend.PackRuntime
+import dev.vertex.core.SharedVulkanContext
 import dev.vertex.ui.VertexUi
 import net.minecraft.client.Minecraft
 import net.fabricmc.api.ClientModInitializer
@@ -42,6 +43,7 @@ object Vertex : ClientModInitializer {
         ShadowRenderer.close()
         TerrainMesh.close()
         PackRuntime.apply(minecraft.gameDirectory.toPath(), settings)
+        SharedVulkanContext.resetPackHealth()
         if (settings.enabled) {
             PackChain.prepare()
             DynamicRenderer.prepare()

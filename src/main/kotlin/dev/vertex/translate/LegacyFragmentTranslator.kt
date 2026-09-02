@@ -8,16 +8,26 @@ object LegacyFragmentTranslator {
     private val fragData = Regex("""\bgl_FragData\s*\[\s*(\d+)\s*]""")
 
     fun translate(source: String, outputTypes: List<ColorNumericType> = emptyList()): String {
+        val shadowSamplers = SHADOW_SAMPLER.findAll(source).map { it.groupValues[1] }.toSet()
         var body = source
             .replace(Regex("""^\s*#version[^\n]*""", RegexOption.MULTILINE), "")
             .replace(Regex("""^\s*#extension[^\n]*""", RegexOption.MULTILINE), "")
             .replace(BUFFER_DIRECTIVE, "")
             .replace(Regex("""\buniform\s+sampler2DShadow\b"""), "uniform sampler2D")
+        shadowSamplers.forEach { sampler ->
+            body = body.replace(
+                Regex("""\btexture\s*\(\s*${Regex.escape(sampler)}\s*,"""),
+                "vertexShadowCompare($sampler,",
+            )
+        }
         body = LegacyUniformTranslator.translate(body)
         var location = 0
         body = varying.replace(body) { match ->
             match.groupValues[2].split(',').joinToString("\n") { raw ->
-                "layout(location = ${location++}) in ${match.groupValues[1]} ${raw.trim()};"
+                val declaration = raw.trim()
+                val assigned = location
+                location += locationWidth(match.groupValues[1], declaration)
+                "layout(location = $assigned) in ${match.groupValues[1]} $declaration;"
             }
         }
         body = body.replace(TEXTURE_CALL) { textureFunction(it.groupValues[1]) + "(" }
@@ -30,8 +40,8 @@ object LegacyFragmentTranslator {
         require(outputs.isNotEmpty()) { "fragment shader has no color output" }
         require(legacyOutputs.intersect(modernOutputs.keys).isEmpty()) { "fragment output location declared twice" }
         modernOutputs.forEach { (location, type) ->
-            val expected = outputType(outputTypes.getOrElse(location) { ColorNumericType.FLOAT })
-            require(type == expected) { "fragment output $location is $type; attachment requires $expected" }
+            val expected = outputTypes.getOrElse(location) { ColorNumericType.FLOAT }
+            require(numericType(type) == expected) { "fragment output $location is $type; attachment requires ${outputType(expected)}" }
         }
         body = ASSIGNMENT.replace(body) { match ->
             val location = match.groupValues[1].toInt()
@@ -42,14 +52,11 @@ object LegacyFragmentTranslator {
         }
         body = fragData.replace(body) { "vertexFragColor${it.groupValues[1]}" }
             .replace(Regex("""\bgl_FragColor\b"""), "vertexFragColor0")
+        body = LegacyShadowCompare.inject(body)
 
         return buildString {
-            appendLine("#version 330")
+            appendLine("#version 450")
             appendLine("#extension GL_ARB_separate_shader_objects : require")
-            if ("shadow2D" in body) {
-                appendLine("#define shadow2D(s, c) vec4(float((c).z <= texture((s), (c).xy).r))")
-                appendLine("#define shadow2DProj(s, c) vec4(float((c).z / (c).w <= texture((s), (c).xy / (c).w).r))")
-            }
             legacyOutputs.sorted().forEach { location ->
                 appendLine("layout(location = $location) out ${outputType(outputTypes.getOrElse(location) { ColorNumericType.FLOAT })} vertexFragColor$location;")
             }
@@ -67,14 +74,22 @@ object LegacyFragmentTranslator {
         ColorNumericType.FLOAT -> "vec4"; ColorNumericType.SINT -> "ivec4"; ColorNumericType.UINT -> "uvec4"
     }
 
+    private fun numericType(type: String): ColorNumericType = when {
+        type == "uint" || type.startsWith("uvec") -> ColorNumericType.UINT
+        type == "int" || type.startsWith("ivec") -> ColorNumericType.SINT
+        else -> ColorNumericType.FLOAT
+    }
+
     private val ASSIGNMENT = Regex("""\bgl_FragData\s*\[\s*(\d+)\s*]\s*=\s*([^;]+);""")
     private val FRAG_COLOR_ASSIGNMENT = Regex("""\bgl_FragColor\s*=\s*([^;]+);""")
-    private val MODERN_OUTPUT = Regex("""layout\s*\(\s*location\s*=\s*(\d+)\s*\)\s*out\s+(vec4|ivec4|uvec4)\s+\w+\s*;""")
-    private val TEXTURE_CALL = Regex("""\b(texture2DProj|texture2DLod|texture2D|texture3D|textureCube)\s*\(""")
+    private val MODERN_OUTPUT = Regex("""layout\s*\(\s*location\s*=\s*(\d+)\s*\)\s*out\s+(float|int|uint|[iu]?vec[234])\s+\w+\s*;""")
+    private val TEXTURE_CALL = Regex("""\b(texture2DGradARB|texture2DGradEXT|texture2DProj|texture2DLod|texture2D|texture3D|textureCube)\s*\(""")
+    private val SHADOW_SAMPLER = Regex("""\buniform\s+sampler2DShadow\s+([A-Za-z_]\w*)\s*;""")
 
     private fun textureFunction(name: String) = when (name) {
         "texture2DProj" -> "textureProj"
         "texture2DLod" -> "textureLod"
+        "texture2DGradARB", "texture2DGradEXT" -> "textureGrad"
         else -> "texture"
     }
 
@@ -82,4 +97,17 @@ object LegacyFragmentTranslator {
         """^\s*const\s+(?:int|bool|vec4)\s+\w+(?:Format|Clear|ClearColor)\s*=.*;\s*$""",
         RegexOption.MULTILINE,
     )
+
+    private fun locationWidth(type: String, declaration: String): Int {
+        val columns = Regex("""(?:d?mat)([234])(?:x[234])?""").matchEntire(type)
+            ?.groupValues?.get(1)?.toInt() ?: 1
+        val expression = Regex("""\[\s*([^]]+)\s*]""").find(declaration)?.groupValues?.get(1) ?: return columns
+        val extent = expression.trim().toIntOrNull()
+            ?: Regex("""(\d+)\s*/\s*(\d+)""").matchEntire(expression.trim())?.destructured
+                ?.let { (left, right) -> left.toInt() / right.toInt() }
+            ?: Regex("""(\d+)\s*\*\s*(\d+)""").matchEntire(expression.trim())?.destructured
+                ?.let { (left, right) -> left.toInt() * right.toInt() }
+            ?: 1
+        return columns * extent.coerceAtLeast(1)
+    }
 }

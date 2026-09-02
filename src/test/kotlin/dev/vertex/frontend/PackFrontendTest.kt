@@ -57,4 +57,66 @@ class PackFrontendTest {
 
         assertEquals(listOf(0, 1), PackFrontend.loadScreenChain(pack).single().outputs)
     }
+
+    @Test
+    fun `normalizes modern stage interfaces for legacy translation`() {
+        val pack = Files.createTempDirectory("vertex-pack-modern-interface")
+        val shaders = pack.resolve("shaders").createDirectories()
+        shaders.resolve("composite.vsh").writeText(
+            "flat out vec3 ray;\nvoid main() { ray = vec3(1.0); gl_Position = vec4(0.0); }\n",
+        )
+        shaders.resolve("composite.fsh").writeText(
+            "flat in vec3 ray;\nvoid main() { gl_FragColor = vec4(ray, 1.0); }\n",
+        )
+        val program = PackFrontend.loadScreenChain(pack).single()
+        assertContains(program.vertexSource, "varying vec3 ray;")
+        assertContains(program.fragmentSource, "varying vec3 ray;")
+    }
+
+    @Test
+    fun `flattens struct stage interfaces`() {
+        val pack = Files.createTempDirectory("vertex-pack-struct-interface")
+        val shaders = pack.resolve("shaders").createDirectories()
+        val structure = "struct Fog { vec3 scattering; float density; };\n"
+        shaders.resolve("composite.vsh").writeText(
+            structure + "flat out Fog fog;\nvoid main() { fog.scattering = vec3(1.0); fog.density = 0.5; gl_Position = vec4(0.0); }\n",
+        )
+        shaders.resolve("composite.fsh").writeText(
+            structure + "flat in Fog fog;\nvoid main() { gl_FragColor = vec4(fog.scattering * fog.density, 1.0); }\n",
+        )
+        val program = PackFrontend.loadScreenChain(pack).single()
+        assertContains(program.vertexSource, "varying vec3 fog_scattering;")
+        assertContains(program.fragmentSource, "varying float fog_density;")
+        assertContains(program.vertexSource, "fog_scattering = fog.scattering;")
+        assertContains(program.fragmentSource, "fog.scattering = fog_scattering;")
+    }
+
+    @Test
+    fun `skips screen programs disabled by pack settings`() {
+        val pack = Files.createTempDirectory("vertex-pack-program-enabled")
+        val shaders = pack.resolve("shaders")
+        val world = shaders.resolve("world0").createDirectories()
+        shaders.resolve("settings.glsl").writeText("//#define OPTIONAL_PASS\n")
+        shaders.resolve("shaders.properties").writeText("program.world0/composite1.enabled=OPTIONAL_PASS\n")
+        for (name in listOf("composite", "composite1")) {
+            world.resolve("$name.vsh").writeText("void main() { gl_Position = vec4(0.0); }\n")
+            world.resolve("$name.fsh").writeText("void main() { gl_FragColor = vec4(1.0); }\n")
+        }
+        assertEquals(listOf("composite"), PackFrontend.loadScreenChain(pack).map(LoadedProgram::name))
+    }
+
+    @Test
+    fun `falls back to shared programs when dimension programs are disabled`() {
+        val pack = Files.createTempDirectory("vertex-pack-program-fallback")
+        val shaders = pack.resolve("shaders")
+        val world = shaders.resolve("world0").createDirectories()
+        shaders.resolve("shaders.properties").writeText("program.world0/composite.enabled=false\n")
+        world.resolve("composite.vsh").writeText("vec3 dimensionProgram;\nvoid main() { gl_Position = vec4(0.0); }\n")
+        world.resolve("composite.fsh").writeText("void main() { gl_FragColor = vec4(1.0); }\n")
+        shaders.resolve("composite.vsh").writeText("vec3 sharedProgram;\nvoid main() { gl_Position = vec4(0.0); }\n")
+        shaders.resolve("composite.fsh").writeText("void main() { gl_FragColor = vec4(1.0); }\n")
+
+        val program = PackFrontend.loadScreenChain(pack).single()
+        assertContains(program.vertexSource, "sharedProgram")
+    }
 }

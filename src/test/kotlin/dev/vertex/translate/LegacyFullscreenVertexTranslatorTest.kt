@@ -48,4 +48,14 @@ class LegacyFullscreenVertexTranslatorTest {
         assertContains(translated, "vec4(vertexUv * 2.0 - 1.0, 0.0, 1.0)")
         assertContains(translated, "texture(tex, vec4(0.0).xy)")
     }
+
+    @Test
+    fun `reserves all locations occupied by matrices and arrays`() {
+        val translated = LegacyFullscreenVertexTranslator.translate(
+            "varying mat3 basis; varying vec3 samples[4]; varying float tail; void main() { gl_Position = ftransform(); }",
+        )
+        assertContains(translated, "layout(location = 0) out mat3 basis;")
+        assertContains(translated, "layout(location = 3) out vec3 samples[4];")
+        assertContains(translated, "layout(location = 7) out float tail;")
+    }
 }

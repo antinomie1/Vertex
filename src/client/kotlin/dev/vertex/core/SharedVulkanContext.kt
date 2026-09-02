@@ -34,6 +34,12 @@ data class SharedVulkanContext(
             current ?: probe().also { current = it }
         }
 
+        /** Pack failures are recoverable on reload; hardware capability decisions are not. */
+        @JvmStatic
+        fun resetPackHealth() {
+            current?.health?.reset()
+        }
+
         private fun probe(): SharedVulkanContext {
             val frontend = RenderSystem.getDevice()
             val backend = (frontend as? FrontendGpuDevice)

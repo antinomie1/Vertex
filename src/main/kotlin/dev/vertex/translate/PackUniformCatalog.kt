@@ -52,9 +52,11 @@ object PackUniformCatalog {
         specs.forEach { (name, spec) -> builder.add(name, spec.storageType) }
     }.build()
 
-    val block: String = buildString {
+    fun block(visible: Set<String>): String = buildString {
         appendLine("layout(std140) uniform VertexPackUniforms {")
-        specs.forEach { (name, spec) -> appendLine("    ${spec.glslType} $name;") }
+        specs.forEach { (name, spec) ->
+            appendLine("    ${spec.glslType} ${if (name in visible) name else "vertexUniform_$name"};")
+        }
         appendLine("};")
     }
 
@@ -73,21 +75,99 @@ object PackUniformCatalog {
 object LegacyUniformTranslator {
     fun uniforms(source: String): Set<String> = DECLARATION.findAll(source).flatMap { match ->
         val type = match.groupValues[1]
-        match.groupValues[2].split(',').asSequence().map { it.trim() }.map { name ->
-            val spec = PackUniformCatalog.specs[name]
-                ?: throw IllegalArgumentException("unsupported shader uniform '$type $name'")
-            require(spec.glslType == type) { "$name is declared as $type; expected ${spec.glslType}" }
+        splitDeclarators(match.groupValues[2]).asSequence().map { raw ->
+            val name = DECLARATOR.matchEntire(raw.trim())?.groupValues?.get(1)
+                ?: throw IllegalArgumentException("unsupported shader uniform '$type ${raw.trim()}'")
+            PackUniformCatalog.specs[name]?.let { spec ->
+                require(spec.glslType == type) { "$name is declared as $type; expected ${spec.glslType}" }
+            }
             name
         }
     }.toSet()
 
     fun translate(source: String): String {
+        val implicit = mutableSetOf<String>()
+        if (Regex("""\bgl_Fog\.start\b""").containsMatchIn(source)) implicit += "fogStart"
+        if (Regex("""\bgl_Fog\.(?:end|scale)\b""").containsMatchIn(source)) implicit += setOf("fogStart", "fogEnd")
+        if (Regex("""\bgl_Fog\.color\b""").containsMatchIn(source)) implicit += "fogColor"
         val normalized = LegacyGlslSyntax.translate(source)
-        if (uniforms(normalized).isEmpty()) return normalized
-        return PackUniformCatalog.block + DECLARATION.replace(normalized, "")
+            .replace(Regex("""\bgl_Fog\.start\b"""), "fogStart")
+            .replace(Regex("""\bgl_Fog\.end\b"""), "fogEnd")
+            .replace(Regex("""\bgl_Fog\.scale\b"""), "(1.0 / max(fogEnd - fogStart, 0.0001))")
+            .replace(Regex("""\bgl_Fog\.color\b"""), "vec4(fogColor, 1.0)")
+        if (!DECLARATION.containsMatchIn(normalized) && implicit.isEmpty()) return normalized
+        val declared = uniforms(normalized)
+        val dependencies = mutableSetOf<String>()
+        val rewritten = DECLARATION.replace(normalized) { match ->
+            val type = match.groupValues[1]
+            splitDeclarators(match.groupValues[2]).mapNotNull { raw ->
+                val declarator = DECLARATOR.matchEntire(raw.trim())
+                    ?: throw IllegalArgumentException("unsupported shader uniform '$type ${raw.trim()}'")
+                val name = declarator.groupValues[1]
+                if (name in PackUniformCatalog.specs) null else {
+                    dependencies += fallbackDependencies(name)
+                    val initializer = declarator.groupValues[2].trim().takeIf(String::isNotEmpty)
+                        ?: fallback(type, name)
+                    "$type $name = $initializer;"
+                }
+            }.joinToString("\n")
+        }
+        return PackUniformCatalog.block(declared + dependencies + implicit) + rewritten
+    }
+
+    /** Keep pack-defined uniforms local so one optional Iris expression cannot reject the pack. */
+    private fun fallback(type: String, name: String): String = when (name) {
+        "view_res" -> "vec2(viewWidth, viewHeight)"
+        "view_pixel_size" -> "vec2(1.0 / max(viewWidth, 1.0), 1.0 / max(viewHeight, 1.0))"
+        "view_up_dir" -> "normalize(upPosition)"
+        "view_sun_dir" -> "normalize(sunPosition)"
+        "view_moon_dir" -> "normalize(moonPosition)"
+        "view_light_dir" -> "normalize(shadowLightPosition)"
+        "sun_dir" -> "normalize(mat3(gbufferModelViewInverse) * sunPosition)"
+        "moon_dir" -> "normalize(mat3(gbufferModelViewInverse) * moonPosition)"
+        "light_dir" -> "normalize(mat3(gbufferModelViewInverse) * shadowLightPosition)"
+        "modelViewMatrix", "dhModelView" -> "gbufferModelView"
+        "dhModelViewInverse" -> "gbufferModelViewInverse"
+        "projectionMatrix" -> "gbufferProjection"
+        else -> when (type) {
+            "float" -> "0.0"; "int" -> "0"; "bool" -> "false"
+            "vec2" -> "vec2(0.0)"; "vec3" -> "vec3(0.0)"; "vec4" -> "vec4(0.0)"
+            "ivec2" -> "ivec2(0)"; "ivec3" -> "ivec3(0)"; "ivec4" -> "ivec4(0)"
+            "mat2" -> "mat2(1.0)"; "mat3" -> "mat3(1.0)"; "mat4" -> "mat4(1.0)"
+            else -> error("unsupported shader uniform type '$type'")
+        }
+    }
+
+    private fun fallbackDependencies(name: String): Set<String> = when (name) {
+        "view_res", "view_pixel_size" -> setOf("viewWidth", "viewHeight")
+        "view_up_dir" -> setOf("upPosition")
+        "view_sun_dir" -> setOf("sunPosition")
+        "view_moon_dir" -> setOf("moonPosition")
+        "view_light_dir" -> setOf("shadowLightPosition")
+        "sun_dir" -> setOf("gbufferModelViewInverse", "sunPosition")
+        "moon_dir" -> setOf("gbufferModelViewInverse", "moonPosition")
+        "light_dir" -> setOf("gbufferModelViewInverse", "shadowLightPosition")
+        "modelViewMatrix", "dhModelView" -> setOf("gbufferModelView")
+        "dhModelViewInverse" -> setOf("gbufferModelViewInverse")
+        "projectionMatrix" -> setOf("gbufferProjection")
+        else -> emptySet()
+    }
+
+    private fun splitDeclarators(source: String): List<String> {
+        val parts = mutableListOf<String>()
+        var depth = 0
+        var start = 0
+        source.forEachIndexed { index, char -> when (char) {
+            '(', '[', '{' -> depth++
+            ')', ']', '}' -> depth--
+            ',' -> if (depth == 0) { parts += source.substring(start, index); start = index + 1 }
+        } }
+        parts += source.substring(start)
+        return parts
     }
 
     private val DECLARATION = Regex(
         """\buniform\s+(?:(?:lowp|mediump|highp)\s+)?(float|int|bool|vec[234]|ivec[234]|mat[234])\s+([^;]+);""",
     )
+    private val DECLARATOR = Regex("""([A-Za-z_]\w*)(?:\s*=\s*(.*))?""")
 }

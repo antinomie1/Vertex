@@ -42,7 +42,9 @@ class LegacyFragmentTranslatorTest {
         )
         assertContains(translated, "#define shadow2D")
         assertContains(translated, "uniform sampler2D shadowtex0")
-        assertContains(translated, "<= texture")
+        assertContains(translated, "float vertexShadowCompare")
+        assertEquals(4, Regex("shadowCoord\\.z <= texture").findAll(translated).count())
+        assertContains(translated, "return mix(mix(c00, c10, weight.x), mix(c01, c11, weight.x), weight.y);")
         assertContains(translated, "vertexFragColor0 = shadow2D")
     }
 
@@ -96,5 +98,15 @@ class LegacyFragmentTranslatorTest {
         )
         assertContains(translated, "#define shadow2DProj")
         assertContains(translated, "vertexFragColor0 = shadow2DProj")
+    }
+
+    @Test
+    fun `reserves matching matrix and array input locations`() {
+        val translated = LegacyFragmentTranslator.translate(
+            "varying mat2x3 colors; varying float weights[3]; varying vec2 uv; void main() { gl_FragColor = vec4(uv, 0.0, 1.0); }",
+        )
+        assertContains(translated, "layout(location = 0) in mat2x3 colors;")
+        assertContains(translated, "layout(location = 2) in float weights[3];")
+        assertContains(translated, "layout(location = 5) in vec2 uv;")
     }
 }

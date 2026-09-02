@@ -38,6 +38,7 @@ object DynamicRenderer {
     private val compiled = IdentityHashMap<RenderPipeline, CompiledRenderPipeline>()
     private var device: GpuDevice? = null
     private var prepared = false
+    private var samplerNames = emptySet<String>()
 
     private val entityPipelines = listOf(
         RenderPipelines.ENTITY_SOLID,
@@ -76,6 +77,7 @@ object DynamicRenderer {
             if (dynamic == null) {
                 disable("no gbuffers_entities shader pair")
             } else {
+                samplerNames = dynamic.samplers.toSet()
                 runCatching {
                     val failures = compileGroup(
                         gpu,
@@ -147,10 +149,13 @@ object DynamicRenderer {
     fun isPrepared() = prepared
 
     @JvmStatic
+    fun samplerNames(): Set<String> = samplerNames
+
+    @JvmStatic
     @Synchronized
     fun close() {
         compiled.values.distinct().forEach { runCatching { it.close() } }
-        compiled.clear(); pipelines.clear(); device = null; prepared = false
+        compiled.clear(); pipelines.clear(); device = null; prepared = false; samplerNames = emptySet()
     }
 
     private fun disable(reason: String, failure: Throwable? = null) {
@@ -283,7 +288,7 @@ object DynamicRenderer {
                 val source = shaderSource(
                     particleShaderId,
                     LegacyTranslator.particleVertex(program),
-                    LegacyTranslator.particleFragment(program, reverseDepth = PackChain.usesReverseDepth()),
+                    LegacyTranslator.dynamicFragment(program, dropExtraTargets = true, reverseDepth = PackChain.usesReverseDepth()),
                 )
                 val skipped = compileGroup(gpu, listOf(RenderPipelines.OPAQUE_PARTICLE, RenderPipelines.TRANSLUCENT_PARTICLE), particleShaderId, source, { particle(it) }, program.samplers.toSet())
                 particleArmed = RenderPipelines.OPAQUE_PARTICLE in pipelines || RenderPipelines.TRANSLUCENT_PARTICLE in pipelines
@@ -296,7 +301,7 @@ object DynamicRenderer {
                 val source = shaderSource(
                     particleShaderId,
                     LegacyTranslator.particleVertex(program),
-                    LegacyTranslator.particleFragment(program, reverseDepth = PackChain.usesReverseDepth()),
+                    LegacyTranslator.dynamicFragment(program, dropExtraTargets = true, reverseDepth = PackChain.usesReverseDepth()),
                 )
                 val skipped = compileGroup(gpu, listOf(RenderPipelines.WEATHER), particleShaderId, source, { particle(it) }, program.samplers.toSet())
                 weatherArmed = RenderPipelines.WEATHER in pipelines

@@ -60,9 +60,11 @@ object TerrainMesh {
     private val currentMidUv = ThreadLocal.withInitial { FloatArray(2) }
     private val midUvActive = ThreadLocal.withInitial { false }
     private val shaderId = Identifier.fromNamespaceAndPath("vertex", "terrain_mesh")
+    private val waterShaderId = Identifier.fromNamespaceAndPath("vertex", "water_mesh")
     // Fluid/translucent meshes use a different vanilla contract and are handled by
     // the water family; keep the widened opaque format off those buffers.
-    private val terrainLayers = setOf(ChunkSectionLayer.SOLID, ChunkSectionLayer.CUTOUT)
+    private val opaqueLayers = setOf(ChunkSectionLayer.SOLID, ChunkSectionLayer.CUTOUT)
+    @Volatile private var terrainLayers = opaqueLayers
 
     private val indirectLogged = AtomicBoolean()
     private val separateLogged = AtomicBoolean()
@@ -77,6 +79,7 @@ object TerrainMesh {
         separateAo = false
         noiseSampler = false
         packSamplers = emptySet()
+        terrainLayers = opaqueLayers
         blockMaterials = BlockMaterialMap.empty()
         closeMaterialTextures()
         customFormat = format(requirements)
@@ -105,16 +108,25 @@ object TerrainMesh {
             val runDir = Minecraft.getInstance().gameDirectory.toPath()
             val packRoot = PackRuntime.root(runDir)
             val terrainProg = dev.vertex.frontend.PackFrontend.loadTerrain(packRoot, PackRuntime.options())
+            val waterProg = dev.vertex.frontend.PackFrontend.loadWater(packRoot, PackRuntime.options())
             blockMaterials = BlockMaterialMap.load(packRoot.resolve("shaders/block.properties")).also {
                 Vertex.log.info("[Vertex] terrain block material map: {} rules", it.size)
             }
             separateAo = PackSemanticsParser.load(packRoot, PackRuntime.options()).separateAo
-            noiseSampler = terrainProg.samplers.contains("noisetex")
-            packSamplers = terrainProg.samplers.toSet()
+            noiseSampler = (terrainProg.samplers + waterProg?.samplers.orEmpty()).contains("noisetex")
+            packSamplers = (terrainProg.samplers + waterProg?.samplers.orEmpty()).toSet()
             createMaterialTextures(device)
-            requirements = TerrainRequirementScanner.scan(terrainProg.vertexSource)
+            val terrainRequirements = TerrainRequirementScanner.scan(terrainProg.vertexSource)
+            val waterRequirements = waterProg?.let { TerrainRequirementScanner.scan(it.vertexSource) }
+            requirements = TerrainRequirements(
+                terrainRequirements.entity || waterRequirements?.entity == true,
+                terrainRequirements.midTexCoord || waterRequirements?.midTexCoord == true,
+                terrainRequirements.midBlock || waterRequirements?.midBlock == true,
+                terrainRequirements.tangent || waterRequirements?.tangent == true,
+            )
+            terrainLayers = if (waterProg != null) opaqueLayers + ChunkSectionLayer.TRANSLUCENT else opaqueLayers
             customFormat = format(requirements)
-            val translatedVsh = dev.vertex.translate.LegacyTranslator.terrainVertex(terrainProg, separateAo)
+            val translatedVsh = dev.vertex.translate.LegacyTranslator.terrainVertex(terrainProg, separateAo, requirements)
             val translatedFsh = dev.vertex.translate.LegacyTranslator.terrainFragment(
                 terrainProg,
                 separateAo,
@@ -123,16 +135,28 @@ object TerrainMesh {
             val source = shaderSource(translatedVsh, translatedFsh)
             val solid = createPipelinePair(ChunkSectionLayer.SOLID)
             val cutout = createPipelinePair(ChunkSectionLayer.CUTOUT)
-            val compiled = IdentityHashMap<RenderPipeline, CompiledRenderPipeline>(4)
+            val water = waterProg?.let { createPipelinePair(ChunkSectionLayer.TRANSLUCENT, waterShaderId) }
+            val waterSource = waterProg?.let {
+                shaderSource(
+                    dev.vertex.translate.LegacyTranslator.terrainVertex(it, separateAo, requirements),
+                    dev.vertex.translate.LegacyTranslator.terrainFragment(it, separateAo, PackChain.usesReverseDepth()),
+                    waterShaderId,
+                )
+            }
+            val compiled = IdentityHashMap<RenderPipeline, CompiledRenderPipeline>(6)
             listOf(solid.base, solid.multidraw, cutout.base, cutout.multidraw).forEach { pipeline ->
                 compiled[pipeline] = device.compilePipeline(pipeline, source)
                     ?: error("RenderPearl rejected ${pipeline.location}")
             }
-            prepared = Prepared(device, solid, cutout, compiled)
+            water?.let { pair -> listOf(pair.base, pair.multidraw).forEach { pipeline ->
+                compiled[pipeline] = device.compilePipeline(pipeline, waterSource!!)
+                    ?: error("RenderPearl rejected ${pipeline.location}")
+            } }
+            prepared = Prepared(device, solid, cutout, water, compiled)
             TerrainCommandCache.invalidate()
             Vertex.log.info(
-                "[Vertex] terrain mesh surgery armed: stride={} layers=solid,cutout (gbuffers_terrain translated)",
-                customFormat.getVertexSize()
+                "[Vertex] terrain mesh surgery armed: stride={} layers={} (pack terrain programs translated)",
+                customFormat.getVertexSize(), if (water != null) "solid,cutout,water" else "solid,cutout"
             )
         } catch (t: Throwable) {
             prepared = null
@@ -152,7 +176,7 @@ object TerrainMesh {
         val pair = when (layer) {
             ChunkSectionLayer.SOLID -> state.solid
             ChunkSectionLayer.CUTOUT -> state.cutout
-            ChunkSectionLayer.TRANSLUCENT -> return null
+            ChunkSectionLayer.TRANSLUCENT -> state.water ?: return null
         }
         return if (multidraw) pair.multidraw else pair.base
     }
@@ -166,9 +190,12 @@ object TerrainMesh {
     fun vertexFormat() = customFormat
 
     @JvmStatic
+    fun samplerNames(): Set<String> = packSamplers
+
+    @JvmStatic
     fun isMultidrawPipeline(pipeline: RenderPipeline): Boolean? = prepared?.let { state -> when (pipeline) {
-        state.solid.multidraw, state.cutout.multidraw -> true
-        state.solid.base, state.cutout.base -> false
+        state.solid.multidraw, state.cutout.multidraw, state.water?.multidraw -> true
+        state.solid.base, state.cutout.base, state.water?.base -> false
         else -> null
     } }
     @JvmStatic
@@ -269,14 +296,14 @@ object TerrainMesh {
             Vertex.log.info("[Vertex] terrain draw path verified: DrawSeparate (separate per-draw bundle)")
         }
     }
-    private fun createPipelinePair(layer: ChunkSectionLayer): PipelinePair {
+    private fun createPipelinePair(layer: ChunkSectionLayer, shader: Identifier = shaderId): PipelinePair {
         return PipelinePair(
-            createPipeline(layer, multidraw = false),
-            createPipeline(layer, multidraw = true),
+            createPipeline(layer, multidraw = false, shader = shader),
+            createPipeline(layer, multidraw = true, shader = shader),
         )
     }
 
-    private fun createPipeline(layer: ChunkSectionLayer, multidraw: Boolean): RenderPipeline {
+    private fun createPipeline(layer: ChunkSectionLayer, multidraw: Boolean, shader: Identifier): RenderPipeline {
         val snippet = if (multidraw) {
             RenderPipelines.MULTIDRAW_TERRAIN_SNIPPET
         } else {
@@ -289,8 +316,8 @@ object TerrainMesh {
                     "pipeline/terrain_mesh_${layer.name.lowercase()}${if (multidraw) "_multidraw" else ""}"
                 )
             )
-            .withVertexShader(shaderId)
-            .withFragmentShader(shaderId)
+            .withVertexShader(shader)
+            .withFragmentShader(shader)
             .withVertexBinding(0, customFormat)
             .withBindGroupLayout(BindGroupLayout.builder()
                 .withUniform("Sampler0", UniformType.COMBINED_IMAGE_SAMPLER)
@@ -311,8 +338,8 @@ object TerrainMesh {
         return builder.build()
     }
 
-    private fun shaderSource(vshSource: String, fshSource: String): ShaderSource = ShaderSource { id, type ->
-        if (id.namespace == "vertex" && id == shaderId) {
+    private fun shaderSource(vshSource: String, fshSource: String, shader: Identifier = shaderId): ShaderSource = ShaderSource { id, type ->
+        if (id.namespace == "vertex" && id == shader) {
             when (type) {
                 ShaderType.VERTEX -> vshSource
                 ShaderType.FRAGMENT -> fshSource
@@ -369,6 +396,7 @@ object TerrainMesh {
         val device: GpuDevice,
         val solid: PipelinePair,
         val cutout: PipelinePair,
+        val water: PipelinePair?,
         val compiled: IdentityHashMap<RenderPipeline, CompiledRenderPipeline>,
     )
 

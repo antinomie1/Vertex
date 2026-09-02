@@ -54,6 +54,7 @@ import net.minecraft.world.phys.Vec3
 import java.util.Optional
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.ByteBuffer
 import org.joml.Vector4f
 import org.joml.Matrix4f
 import org.joml.Vector3f
@@ -186,6 +187,13 @@ object PackChain {
         } catch (t: Throwable) {
             disable("screen pipeline prewarm", t)
         }
+    }
+
+    /** Bind a pack-owned static texture for auxiliary terrain/shadow pipelines. */
+    fun bindStaticSampler(pass: RenderPass, name: String): Boolean {
+        val binding = staticByName[name] ?: return false
+        pass.setUniform(name, binding.view, binding.sampler)
+        return true
     }
 
     fun draw() {
@@ -377,6 +385,18 @@ object PackChain {
         TerrainMesh.bindMaterialSamplers(pass)
         staticByName["noisetex"]?.let { pass.setUniform("noisetex", it.view, it.sampler) }
         bindShadowSamplers(pass)
+        val main = Minecraft.getInstance().gameRenderer.mainRenderTarget()
+        val scene = main.colorTextureView
+        TerrainMesh.samplerNames().forEach { name ->
+            if (name in setOf("tex", "texture", "gtexture", "lightmap", "noisetex", "normals", "specular",
+                    "shadowtex0", "shadowtex1", "shadowcolor0", "shadowcolor1")) return@forEach
+            val view = when {
+                DEPTH.matches(name) -> main.depthTextureView
+                colorId(name) != null -> scene
+                else -> scene
+            }
+            if (view != null) runCatching { pass.setUniform(name, view, sampler) }
+        }
         bindUniforms(pass)
     }
 
@@ -393,17 +413,18 @@ object PackChain {
     }
 
     private fun bindShadowSamplers(pass: RenderPass) {
-        // Chunk passes intentionally use a nearest sampler for the block atlas.
-        // Shadow samplers have different semantics: BSL's shadow2D path expects
-        // the hardware's filtered depth lookup, so never inherit the atlas mode.
-        val shadowSampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR)
-        fun bind(name: String, view: GpuTextureView?) {
-            if (view != null) runCatching { pass.setUniform(name, view, shadowSampler) }
+        // sampler2DShadow is emulated in GLSL: fetch exact depth texels, compare
+        // each one, then blend the comparison results. Filtering depth values
+        // before comparing causes acne-like noise on otherwise flat block faces.
+        val depthSampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST)
+        val colorSampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR)
+        fun bind(name: String, view: GpuTextureView?, depth: Boolean) {
+            if (view != null) runCatching { pass.setUniform(name, view, if (depth) depthSampler else colorSampler) }
         }
-        bind("shadowtex0", ShadowRenderer.view("shadowtex0"))
-        bind("shadowtex1", ShadowRenderer.view("shadowtex1"))
-        bind("shadowcolor0", ShadowRenderer.view("shadowcolor0"))
-        bind("shadowcolor1", ShadowRenderer.view("shadowcolor1"))
+        bind("shadowtex0", ShadowRenderer.view("shadowtex0"), true)
+        bind("shadowtex1", ShadowRenderer.view("shadowtex1"), true)
+        bind("shadowcolor0", ShadowRenderer.view("shadowcolor0"), false)
+        bind("shadowcolor1", ShadowRenderer.view("shadowcolor1"), false)
     }
 
     @JvmStatic
@@ -422,6 +443,13 @@ object PackChain {
         bind("depthtex2", depthViews[2] ?: scene)
         bind("normalsTex", normalView)
         bindShadowSamplers(pass)
+        DynamicRenderer.samplerNames().forEach { name ->
+            if (name !in setOf("Sampler0", "Sampler2", "noisetex", "shadowtex0", "shadowtex1", "shadowcolor0", "shadowcolor1")) {
+                bind(name, colorId(name)?.let { id ->
+                    if (id == 0) scene else extraViews[id]?.getOrNull(banks[id]) ?: scene
+                } ?: scene)
+            }
+        }
     }
 
     private fun enabled() = !failed && PackRuntime.isEnabled() &&
@@ -596,31 +624,34 @@ object PackChain {
             depthScale = device.compilePipeline(pipeline, source) ?: error("depth scale pipeline compilation failed")
         }
         if (screenPrograms.isEmpty() && earlyPrograms.isEmpty()) {
-            val compiled = programs.map { program ->
-            val samplers = program.samplers.distinct()
-            val staticSamplers = samplers.mapNotNull { name ->
-                staticSampler(device, packRoot.resolve("shaders"), semantics, program.name, name)?.let { name to it }
-            }.toMap()
-            require(samplers.all { colorId(it) != null || DEPTH.matches(it) || it == "normalsTex" ||
-                ShadowRenderer.view(it) != null || it in staticSamplers }) {
-                "${program.name}: unsupported samplers ${samplers.filterNot { colorId(it) != null || DEPTH.matches(it) ||
-                    it == "normalsTex" || ShadowRenderer.view(it) != null || it in staticSamplers }}"
-            }
-            val layout = BindGroupLayout.builder().also { builder ->
-                samplers.forEach { builder.withUniform(it, UniformType.COMBINED_IMAGE_SAMPLER) }
-                if (program.uniforms.isNotEmpty()) builder.withUniform("VertexPackUniforms", UniformType.UNIFORM_BUFFER)
-            }.build()
-            val vs = id("pack/${program.name}.v")
-            val fs = id("pack/${program.name}.f")
-            val programSource = ShaderSource { _, type -> when (type) {
-                com.mojang.renderpearl.api.pipeline.ShaderType.VERTEX -> LegacyTranslator.vertex(program)
-                com.mojang.renderpearl.api.pipeline.ShaderType.FRAGMENT ->
-                    LegacyTranslator.fragment(program, program.outputs.map { semantics.colors[it].format })
-                else -> null
-            } }
-            ScreenProgram(program.name, compile(device, programSource, vs, fs, layout,
-                program.outputs.map(colorFormats::get)), samplers, program.outputs,
-                semantics.flips[program.name].orEmpty(), staticSamplers, program.uniforms)
+            val compiled = programs.mapNotNull { program -> runCatching {
+                val samplers = program.samplers.distinct()
+                val staticSamplers = samplers.mapNotNull { name ->
+                    staticSampler(device, packRoot.resolve("shaders"), semantics, program.name, name)?.let { name to it }
+                }.toMap()
+                val fallbackSamplers = samplers.filterNot { colorId(it) != null || DEPTH.matches(it) || it == "normalsTex" ||
+                    ShadowRenderer.view(it) != null || it in staticSamplers }
+                if (fallbackSamplers.isNotEmpty()) dev.vertex.Vertex.log.debug(
+                    "[Vertex] {} sampler declarations use scene fallback: {}", program.name, fallbackSamplers,
+                )
+                val layout = BindGroupLayout.builder().also { builder ->
+                    samplers.forEach { builder.withUniform(it, UniformType.COMBINED_IMAGE_SAMPLER) }
+                    if (program.uniforms.isNotEmpty()) builder.withUniform("VertexPackUniforms", UniformType.UNIFORM_BUFFER)
+                }.build()
+                val vs = id("pack/${program.name}.v")
+                val fs = id("pack/${program.name}.f")
+                val programSource = ShaderSource { _, type -> when (type) {
+                    com.mojang.renderpearl.api.pipeline.ShaderType.VERTEX -> LegacyTranslator.vertex(program)
+                    com.mojang.renderpearl.api.pipeline.ShaderType.FRAGMENT ->
+                        LegacyTranslator.fragment(program, program.outputs.map { semantics.colors[it].format })
+                    else -> null
+                } }
+                ScreenProgram(program.name, compile(device, programSource, vs, fs, layout,
+                    program.outputs.map(colorFormats::get)), samplers, program.outputs,
+                    semantics.flips[program.name].orEmpty(), staticSamplers, program.uniforms)
+            }.onFailure { dev.vertex.Vertex.log.warn(
+                "[Vertex] screen program {} rejected; continuing without this optional pass", program.name, it,
+            ) }.getOrNull()
             }
             earlyPrograms = compiled.filter { it.name == "setup" || it.name == "begin" }
             screenPrograms = compiled - earlyPrograms.toSet()
@@ -651,7 +682,7 @@ object PackChain {
         "depthtex2" -> depthViews[2]!!
         "normalsTex" -> normalView!!
         "shadowtex0", "shadowtex1", "shadowcolor0", "shadowcolor1" -> ShadowRenderer.view(name)!!
-        else -> colorId(name)?.let { colorView(it, banks[it], scene) } ?: error("unsupported sampler '$name'")
+        else -> colorId(name)?.let { colorView(it, banks[it], scene) } ?: scene
     }
 
     private fun colorView(id: Int, bank: Int, scene: GpuTextureView): GpuTextureView = when {
@@ -901,8 +932,47 @@ object PackChain {
         }
         val path = if (name == "noisetex") semantics.noisePath else semantics.customTextures[stage]?.get(name)
         if (path == null && name != "noisetex") return null
+        if (path?.startsWith("minecraft:") == true) return null
         val key = path?.let { "file:$it" } ?: "noise:${semantics.noiseResolution}"
         val binding = staticBindings.getOrPut(key) {
+            parseRawTexture(path)?.let { spec ->
+                val file = shaders.resolve(spec.path.removePrefix("/")).normalize()
+                require(file.startsWith(shaders) && Files.isRegularFile(file)) { "custom texture is outside the pack or missing: ${spec.path}" }
+                val source = Files.readAllBytes(file)
+                val layerBytes = Math.multiplyExact(spec.width, Math.multiplyExact(spec.height, spec.bytesPerPixel))
+                require(source.size == Math.multiplyExact(layerBytes, spec.depth)) {
+                    "custom texture ${spec.path} has ${source.size} bytes; expected ${layerBytes * spec.depth}"
+                }
+                val bytes = source.size.toLong()
+                val atlasWidth = Math.multiplyExact(spec.width, spec.depth)
+                require(atlasWidth <= 4096 && spec.height <= 4096 && spec.depth <= 4096 &&
+                    targetBytes + staticBytes + bytes <= packBudgetBytes) { "static texture $name exceeds the pack memory budget" }
+                val texture = device.createTexture(
+                    { "vertex-$name" }, GpuTexture.USAGE_TEXTURE_BINDING or GpuTexture.USAGE_COPY_DST,
+                    spec.format, atlasWidth, spec.height, 1, 1,
+                )
+                val atlas = ByteBuffer.allocateDirect(source.size)
+                val rowBytes = spec.width * spec.bytesPerPixel
+                repeat(spec.height) { row ->
+                    repeat(spec.depth) { layer ->
+                        atlas.put(source, layer * layerBytes + row * rowBytes, rowBytes)
+                    }
+                }
+                atlas.flip()
+                val encoder = device.createCommandEncoder()
+                encoder.writeToTexture(texture, atlas, 0, 0, 0, 0, atlasWidth, spec.height)
+                encoder.submit()
+                staticBytes += bytes
+                staticTextures[key] = texture
+                val filtering = TextureFilter(blur = true, clamp = false)
+                val sampler = textureSamplers.getOrPut(filtering) {
+                    device.createSampler(AddressMode.REPEAT, AddressMode.REPEAT, FilterMode.LINEAR, FilterMode.LINEAR,
+                        1, java.util.OptionalDouble.empty())
+                }
+                dev.vertex.Vertex.log.info("[Vertex] static texture '{}' loaded ({}x{}x{}, format={})",
+                    name, spec.width, spec.height, spec.depth, spec.format)
+                return@getOrPut TextureBinding(device.createTextureView(texture), sampler)
+            }
             val image = path?.let { readImage(shaders, it) } ?: generateNoise(semantics.noiseResolution)
             val filtering = path?.let { readFiltering(shaders, it) } ?: TextureFilter(blur = false, clamp = false)
             image.use {
@@ -933,6 +1003,21 @@ object PackChain {
         }
         staticByName[name] = binding
         return binding
+    }
+
+    private fun parseRawTexture(value: String?): RawTextureSpec? {
+        val tokens = value?.trim()?.split(Regex("\\s+")) ?: return null
+        if (tokens.size < 8 || tokens[1] != "TEXTURE_3D") return null
+        val format = when (tokens[2]) {
+            "R8" -> GpuFormat.R8_UNORM
+            "RGB16F" -> GpuFormat.RGB16_FLOAT
+            else -> return null
+        }
+        val width = tokens[3].toIntOrNull() ?: return null
+        val height = tokens[4].toIntOrNull() ?: return null
+        val depth = tokens[5].toIntOrNull() ?: return null
+        val bytesPerPixel = when (tokens[2]) { "R8" -> 1; "RGB16F" -> 6; else -> return null }
+        return RawTextureSpec(tokens[0], format, width, height, depth, bytesPerPixel)
     }
 
     private fun readImage(shaders: Path, value: String): NativeImage {
@@ -1021,6 +1106,14 @@ object PackChain {
 
     private data class TextureBinding(val view: GpuTextureView, val sampler: GpuSampler)
     private data class TextureFilter(val blur: Boolean, val clamp: Boolean)
+    private data class RawTextureSpec(
+        val path: String,
+        val format: GpuFormat,
+        val width: Int,
+        val height: Int,
+        val depth: Int,
+        val bytesPerPixel: Int,
+    )
 
     private fun gpuFormat(format: ColorFormat): GpuFormat = when (format) {
         ColorFormat.R8 -> GpuFormat.R8_UNORM; ColorFormat.RG8 -> GpuFormat.RG8_UNORM

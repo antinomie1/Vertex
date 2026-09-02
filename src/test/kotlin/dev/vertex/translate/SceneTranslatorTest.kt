@@ -28,6 +28,7 @@ void main() { gl_FragColor = texture2D(texture, texcoord); }
     fun `sky stages map position and pack varyings`() {
         assertContains(LegacyTranslator.skyVertex(sky), "layout(location = 0) in vec3 Position;")
         assertContains(LegacyTranslator.skyVertex(sky), "layout(location = 2) out vec2 texcoord;")
+        assertContains(LegacyTranslator.skyVertex(sky), "gl_Position = vertexFullscreenSky(Position);")
         assertContains(LegacyTranslator.skyFragment(sky), "layout(location = 2) in vec2 texcoord;")
         val fragment = LegacyTranslator.skyFragment(sky)
         assertContains(fragment, "texture(Sampler0, texcoord)")
@@ -38,6 +39,7 @@ void main() { gl_FragColor = texture2D(texture, texcoord); }
     fun `stars variant omits fog ABI`() {
         val vertex = LegacyTranslator.skyVertex(sky, includeFog = false)
         val fragment = LegacyTranslator.skyFragment(sky, includeFog = false)
+        assertFalse(vertex.contains("vertexFullscreenSky"))
         assertFalse(vertex.contains("minecraft:fog.glsl"))
         assertFalse(fragment.contains("minecraft:fog.glsl"))
     }

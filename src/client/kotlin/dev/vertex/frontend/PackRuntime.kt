@@ -56,8 +56,13 @@ object PackRuntime {
     @Synchronized
     fun apply(gameDir: Path, settings: Settings) {
         configFile = gameDir.resolve("config/vertex-shaders.properties")
-        val optionString = System.getProperty("vertex.options")
-            ?: options().asSequence().sortedBy { it.key }.joinToString(",") { "${it.key}=${it.value}" }
+        val previousPack = settings(gameDir).pack
+        val samePack = samePack(gameDir, previousPack, settings.pack)
+        val optionString = if (samePack) {
+            System.getProperty("vertex.options")
+                ?: options().asSequence().sortedBy { it.key }.joinToString(",") { "${it.key}=${it.value}" }
+        } else ""
+        if (!samePack) System.clearProperty("vertex.options")
         enabled = settings.enabled
         // OFF is a real vanilla mode: do not leave a stale pack path around for
         // the next launch or for any late resource lookup.
@@ -78,6 +83,16 @@ object PackRuntime {
             Files.newOutputStream(file).use { output -> it.store(output, "Vertex shader settings") }
         }
         close()
+    }
+
+    private fun samePack(gameDir: Path, first: String?, second: String?): Boolean {
+        if (first == null || second == null) return first == second
+        fun resolve(value: String): Path {
+            val path = Path.of(value)
+            return (if (path.isAbsolute) path else gameDir.resolve("shaderpacks").resolve(path))
+                .toAbsolutePath().normalize()
+        }
+        return resolve(first) == resolve(second)
     }
 
     fun options(): Map<String, String> = (System.getProperty("vertex.options")

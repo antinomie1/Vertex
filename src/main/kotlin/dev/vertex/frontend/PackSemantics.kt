@@ -60,7 +60,8 @@ object PackSemanticsParser {
             files.filter { Files.isRegularFile(it) && it.fileName.toString().substringAfterLast('.', "") in SHADER_EXTENSIONS }
                 .sorted().forEach { path ->
                     LEGACY_GAUX4.find(Files.readString(path))?.groupValues?.get(1)?.let { settings[7] = settings[7].copy(format = ColorFormat.parse(it)) }
-                    val source = ShaderPreprocessor(listOf(shaders), options).process(path)
+                    val source = runCatching { ShaderPreprocessor(listOf(shaders), options).process(path) }
+                        .getOrElse { Files.readString(path) }
                     parseShader(source, settings)
                     NOISE_RESOLUTION.find(source)?.groupValues?.get(1)?.toInt()?.let { noiseResolution = it }
                 }

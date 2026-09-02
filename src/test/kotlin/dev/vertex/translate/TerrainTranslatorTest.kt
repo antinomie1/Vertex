@@ -3,6 +3,7 @@ package dev.vertex.translate
 import dev.vertex.frontend.LoadedProgram
 import kotlin.test.Test
 import kotlin.test.assertContains
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 
 class TerrainTranslatorTest {
@@ -25,7 +26,7 @@ class TerrainTranslatorTest {
         val vertex = LegacyTranslator.terrainVertex(program)
         val fragment = LegacyTranslator.terrainFragment(program)
         assertContains(vertex, "layout(location = 3) out vec4 tint;")
-        assertContains(vertex, "ProjMat * ModelViewMat * vec4(pos, 1.0)")
+        assertContains(vertex, "ProjMat * ModelViewMat * vec4(vertexTerrainPos, 1.0)")
         assertContains(fragment, "layout(location = 3) in vec4 tint;")
         assertContains(fragment, "texture(Sampler0, vec2(0.5))")
         assertFalse(fragment.contains("Sampler0(Sampler0"))
@@ -50,6 +51,8 @@ class TerrainTranslatorTest {
         )
         val fragment = LegacyTranslator.shadowFragment(program)
         assertContains(fragment, "texture(Sampler0, vec2(0.5))")
+        assertContains(fragment, "if (value.a <= 0.1) discard;")
+        assertContains(fragment, "shadowColor = vertexShadowAlphaTest(texture(Sampler0, vec2(0.5)));")
         assertFalse(fragment.contains("Sampler0(Sampler0"))
     }
 
@@ -61,6 +64,18 @@ class TerrainTranslatorTest {
             null, emptyList(), listOf(0), emptySet(),
         )
         val vertex = LegacyTranslator.shadowVertex(program)
-        assertContains(vertex, "vertexShadowMvp * vec4(pos, 1.0)")
+        assertContains(vertex, "vertexShadowMvp * vec4(vertexShadowPos, 1.0)")
+    }
+
+    @Test fun `emulates filtered shadow comparison before terrain shading`() {
+        val program = LoadedProgram(
+            "terrain-shadow",
+            "#version 120\nvoid main() { gl_Position = ftransform(); }",
+            "#version 120\nuniform sampler2DShadow shadowtex0; void main() { gl_FragColor = shadow2D(shadowtex0, vec3(0.5)); }",
+            null, emptyList(), listOf(0), setOf("shadowtex0"),
+        )
+        val fragment = LegacyTranslator.terrainFragment(program)
+        assertContains(fragment, "float vertexShadowCompare")
+        assertEquals(4, Regex("shadowCoord\\.z <= texture").findAll(fragment).count())
     }
 }

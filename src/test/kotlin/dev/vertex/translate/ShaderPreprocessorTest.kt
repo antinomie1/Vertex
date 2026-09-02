@@ -105,6 +105,70 @@ class ShaderPreprocessorTest {
     }
 
     @Test
+    fun `ignores documentation after conditional directives`() {
+        val root = Files.createTempDirectory("vertex-preprocessor-conditional-comment")
+        val source = root.resolve("main.glsl")
+        source.writeText(
+            "#define DETAIL_QUALITY 0\n" +
+                "#if DETAIL_QUALITY == 0 // Potato\nfloat quality = 0.0;\n#endif\n" +
+                "#if DETAIL_QUALITY == 0 /* lowest preset */\nfloat preset = 0.0;\n#endif\n",
+        )
+        val output = ShaderPreprocessor(listOf(root)).process(source)
+        assertContains(output, "float quality = 0.0;")
+        assertContains(output, "float preset = 0.0;")
+    }
+
+    @Test
+    fun `resolves chained object macros in conditionals`() {
+        val root = Files.createTempDirectory("vertex-preprocessor-macro-alias")
+        val source = root.resolve("main.glsl")
+        source.writeText(
+            "#define QUALITY_DEFINE 2\n#define QUALITY QUALITY_DEFINE\n" +
+                "#if QUALITY > 0\nfloat enabled = 1.0;\n#endif\n",
+        )
+        assertContains(ShaderPreprocessor(listOf(root)).process(source), "float enabled = 1.0;")
+    }
+
+    @Test
+    fun `joins multiline conditional expressions`() {
+        val root = Files.createTempDirectory("vertex-preprocessor-continuation")
+        val source = root.resolve("main.glsl")
+        source.writeText(
+            "#define FIRST 1\n#define SECOND 1\n" +
+                "#if FIRST && \\\n    SECOND\nfloat enabled = 1.0;\n#endif\n",
+        )
+        val output = ShaderPreprocessor(listOf(root)).process(source)
+        assertContains(output, "float enabled = 1.0;")
+        assertEquals(6, output.count { it == '\n' })
+    }
+
+    @Test
+    fun `evaluates arithmetic bitmasks numeric suffixes and macro expressions`() {
+        val root = Files.createTempDirectory("vertex-preprocessor-arithmetic")
+        val source = root.resolve("main.glsl")
+        source.writeText(
+            "#define FEATURE_INDEX 3\n#define FEATURE_MASK (1u << FEATURE_INDEX)\n" +
+                "#if (FEATURE_MASK & 8UL) && ((6 / 2) + 1 == 4)\nfloat enabled = 1.0;\n#endif\n" +
+                "#if 1 || (1 / 0)\nfloat shortCircuit = 1.0;\n#endif\n",
+        )
+        val output = ShaderPreprocessor(listOf(root)).process(source)
+        assertContains(output, "float enabled = 1.0;")
+        assertContains(output, "float shortCircuit = 1.0;")
+    }
+
+    @Test
+    fun `does not evaluate conditionals nested inside inactive branches`() {
+        val root = Files.createTempDirectory("vertex-preprocessor-inactive")
+        val source = root.resolve("main.glsl")
+        source.writeText(
+            "#if 0\n#if PACK_SPECIFIC @ TOKEN\ninvalid;\n#endif\n#endif\nfloat valid = 1.0;\n",
+        )
+        val output = ShaderPreprocessor(listOf(root)).process(source)
+        assertContains(output, "float valid = 1.0;")
+        assertFalse("invalid;" in output)
+    }
+
+    @Test
     fun `include cycles fail with source context`() {
         val root = Files.createTempDirectory("vertex-preprocessor-cycle")
         root.resolve("a.glsl").writeText("#include \"b.glsl\"\n")

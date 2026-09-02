@@ -12,7 +12,10 @@ object LegacyFullscreenVertexTranslator {
         body = LegacyUniformTranslator.translate(body)
         body = varying.replace(body) { match ->
             match.groupValues[2].split(',').joinToString("\n") { raw ->
-                "layout(location = ${location++}) out ${match.groupValues[1]} ${raw.trim()};"
+                val declaration = raw.trim()
+                val assigned = location
+                location += locationWidth(match.groupValues[1], declaration)
+                "layout(location = $assigned) out ${match.groupValues[1]} $declaration;"
             }
         }
         body = body
@@ -33,12 +36,30 @@ object LegacyFullscreenVertexTranslator {
             main.value + "\n    vec2 vertexUv = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2));",
         )
         require("vertexUv" in body) { "fullscreen vertex shader has no main()" }
-        return "#version 330\n#extension GL_ARB_separate_shader_objects : require\n" + body.trimStart()
+        return "#version 450\n#extension GL_ARB_separate_shader_objects : require\n" + body.trimStart()
     }
 
-    private val TEXTURE_CALL = Regex("""\b(texture2DProj|texture2DLod|texture2D|texture3D|textureCube)\s*\(""")
+    private val TEXTURE_CALL = Regex("""\b(texture2DGradARB|texture2DGradEXT|texture2DProj|texture2DLod|texture2D|texture3D|textureCube)\s*\(""")
 
     private fun modernizeTextureCalls(source: String) = source.replace(TEXTURE_CALL) {
-        (when (it.groupValues[1]) { "texture2DProj" -> "textureProj"; "texture2DLod" -> "textureLod"; else -> "texture" }) + "("
+        (when (it.groupValues[1]) {
+            "texture2DProj" -> "textureProj"
+            "texture2DLod" -> "textureLod"
+            "texture2DGradARB", "texture2DGradEXT" -> "textureGrad"
+            else -> "texture"
+        }) + "("
+    }
+
+    private fun locationWidth(type: String, declaration: String): Int {
+        val columns = Regex("""(?:d?mat)([234])(?:x[234])?""").matchEntire(type)
+            ?.groupValues?.get(1)?.toInt() ?: 1
+        val expression = Regex("""\[\s*([^]]+)\s*]""").find(declaration)?.groupValues?.get(1) ?: return columns
+        val extent = expression.trim().toIntOrNull()
+            ?: Regex("""(\d+)\s*/\s*(\d+)""").matchEntire(expression.trim())?.destructured
+                ?.let { (left, right) -> left.toInt() / right.toInt() }
+            ?: Regex("""(\d+)\s*\*\s*(\d+)""").matchEntire(expression.trim())?.destructured
+                ?.let { (left, right) -> left.toInt() * right.toInt() }
+            ?: 1
+        return columns * extent.coerceAtLeast(1)
     }
 }

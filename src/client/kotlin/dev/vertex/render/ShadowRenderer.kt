@@ -93,7 +93,7 @@ object ShadowRenderer {
         runCatching { uniformBuffer?.close() }
         listOf(base, multidraw).filterNotNull().distinct().forEach { runCatching { it.close() } }
         depthView = null; depthTexture = null; colorView = null; colorTexture = null; uniformBuffer = null
-        base = null; multidraw = null; active = false; failed = false; discovered = false; requested = emptySet(); slot = 0
+        base = null; multidraw = null; active = false; failed = false; discovered = false; requested = emptySet(); packSamplerNames = emptySet(); slot = 0
         shadowDistance = 160f; sunPathRotation = 0f
         logged.set(false); cacheLogged.set(false); cache.invalidate()
         shadowValid = false
@@ -180,7 +180,7 @@ object ShadowRenderer {
             // mutable Camera can still contain the previous tick during movement,
             // which would otherwise invalidate the shadow cache one frame early.
             val camera = PackChain.cameraPositionForFrame()
-            if (!cache.needsRender(angle, camera.x, camera.z)) {
+            if (!cache.needsRender(angle, camera.x, camera.y, camera.z)) {
                 if (cacheLogged.compareAndSet(false, true)) Vertex.log.info("[Vertex] shadow cache hit verified")
                 return
             }
@@ -194,6 +194,9 @@ object ShadowRenderer {
                 pass.setUniform("ShadowUniforms", uniformBuffer!!.slice(slot * SHADOW_SLOT_BYTES, 64L))
                 val sampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST)
                 val atlas = Minecraft.getInstance().textureManager.getTexture(TextureAtlas.LOCATION_BLOCKS).textureView
+                packSamplerNames.forEach { name ->
+                    if (!PackChain.bindStaticSampler(pass, name)) pass.setUniform(name, atlas, sampler)
+                }
                 active = true
                 try {
                     sections.renderGroup(ChunkSectionLayerGroup.OPAQUE, pass, sampler, atlas, false)
@@ -202,7 +205,7 @@ object ShadowRenderer {
                 }
             }
             if (hasGeometry) {
-                cache.markRendered(angle, camera.x, camera.z, renderEpoch)
+                cache.markRendered(angle, camera.x, camera.y, camera.z, renderEpoch)
                 shadowValid = true
                 if (logged.compareAndSet(false, true)) Vertex.log.info("[Vertex] shadow terrain draw verified")
             } else if (emptyLogged.compareAndSet(false, true)) {
@@ -337,8 +340,11 @@ object ShadowRenderer {
         separateAo: Boolean,
         midTexCoord: Boolean,
     ) {
+        packSamplerNames = program?.samplers.orEmpty()
+            .filterNot { it in setOf("tex", "texture", "gtexture") }.toSet()
         val layout = BindGroupLayout.builder()
             .withUniform("Sampler0", UniformType.COMBINED_IMAGE_SAMPLER)
+            .apply { packSamplerNames.forEach { withUniform(it, UniformType.COMBINED_IMAGE_SAMPLER) } }
             .withUniform("ShadowUniforms", UniformType.UNIFORM_BUFFER)
             .withUniform("VertexPackUniforms", UniformType.UNIFORM_BUFFER)
             .build()
@@ -389,6 +395,7 @@ object ShadowRenderer {
 
     private fun id(path: String) = Identifier.fromNamespaceAndPath("vertex", path)
     private val SHADOW_SAMPLERS = setOf("shadowtex0", "shadowtex1", "shadowcolor0", "shadowcolor1")
+    private var packSamplerNames = emptySet<String>()
     private val SHADOW_DISTANCE = Regex("""(?m)^\s*const\s+float\s+shadowDistance\s*=\s*([-+]?\d+(?:\.\d+)?)""")
     private val SUN_PATH_ROTATION = Regex("""(?m)^\s*const\s+float\s+sunPathRotation\s*=\s*([-+]?\d+(?:\.\d+)?)""")
     private val CLEAR = Vector4f(1f, 1f, 1f, 1f)
