@@ -283,6 +283,29 @@ object DynamicRenderer {
             )
             if (armed > 0) { groups++; pipelineCount += armed }
         }
+        fun auxiliary(
+            name: String,
+            originals: List<RenderPipeline>,
+            compatible: (RenderPipeline) -> Boolean,
+            vertex: (dev.vertex.frontend.LoadedProgram) -> String,
+            bindAtlasFallback: Boolean = false,
+            fragment: (dev.vertex.frontend.LoadedProgram) -> String = {
+                LegacyTranslator.dynamicFragment(
+                    it, dropExtraTargets = true, reverseDepth = PackChain.usesReverseDepth(),
+                )
+            },
+        ) {
+            val program = PackFrontend.loadProgram(root, name, options, dimension) ?: return
+            samplerNames = samplerNames + program.samplers
+            val translatedFragment = fragment(program)
+            if (bindAtlasFallback && translatedFragment.contains("uniform sampler2D Sampler0;")) {
+                samplerNames = samplerNames + "Sampler0"
+            }
+            val armed = compileOverride(
+                gpu, program, originals, compatible, vertex(program), translatedFragment, bindAtlasFallback,
+            )
+            if (armed > 0) { groups++; pipelineCount += armed }
+        }
 
         entity("gbuffers_entities_translucent", listOf(
             RenderPipelines.ENTITY_TRANSLUCENT,
@@ -304,6 +327,30 @@ object DynamicRenderer {
         ))
         block("gbuffers_block_translucent", listOf(RenderPipelines.TRANSLUCENT_BLOCK))
         block("gbuffers_damagedblock", listOf(RenderPipelines.CRUMBLING))
+        block("gbuffers_beaconbeam", listOf(
+            RenderPipelines.BEACON_BEAM_OPAQUE,
+            RenderPipelines.BEACON_BEAM_TRANSLUCENT,
+        ))
+        auxiliary(
+            "gbuffers_lightning", listOf(RenderPipelines.LIGHTNING), ::positionColor,
+            vertex = { LegacyTranslator.coloredVertex(it) },
+            bindAtlasFallback = true,
+        )
+        auxiliary("gbuffers_line", listOf(
+            RenderPipelines.LINES,
+            RenderPipelines.LINES_DEPTH_BIAS,
+            RenderPipelines.LINES_TRANSLUCENT,
+            RenderPipelines.LINES_TRANSLUCENT_NO_DEPTH_WRITE,
+        ), ::positionColorNormal,
+            vertex = { LegacyTranslator.coloredVertex(it, includeNormal = true) },
+            bindAtlasFallback = true,
+        )
+        auxiliary(
+            "gbuffers_skytextured",
+            listOf(RenderPipelines.CELESTIAL),
+            ::positionTexture,
+            LegacyTranslator::texturedSkyVertex,
+        ) { LegacyTranslator.skyFragment(it, includeFog = false, reverseDepth = PackChain.usesReverseDepth()) }
         if (groups > 0) Vertex.log.info(
             "[Vertex] specialized material bridges armed: {} groups, {} pipelines",
             groups, pipelineCount,
@@ -317,6 +364,7 @@ object DynamicRenderer {
         compatible: (RenderPipeline) -> Boolean,
         vertex: String,
         fragment: String,
+        bindAtlasFallback: Boolean = false,
     ): Int {
         val shaderId = Identifier.fromNamespaceAndPath("vertex", "dynamic_${program.name}")
         val previous = originals.associateWith { pipelines[it] }
@@ -326,7 +374,9 @@ object DynamicRenderer {
             shaderId,
             shaderSource(shaderId, vertex, fragment),
             compatible,
-            program.samplers.toSet(),
+            program.samplers.toSet() + if (bindAtlasFallback && fragment.contains("uniform sampler2D Sampler0;")) {
+                setOf("Sampler0")
+            } else emptySet(),
             setOf("EMISSIVE"),
         )
         val armed = originals.count { pipelines[it] !== previous[it] }
@@ -444,6 +494,21 @@ object DynamicRenderer {
     private fun particle(pipeline: RenderPipeline): Boolean =
         pipeline.getVertexFormatBinding(0)?.let {
             it.contains("Position") && it.contains("UV0") && it.contains("Color") && it.contains("UV2")
+        } == true
+
+    private fun positionColor(pipeline: RenderPipeline): Boolean =
+        pipeline.getVertexFormatBinding(0)?.let {
+            it.contains("Position") && it.contains("Color") && it.getElements().size == 2
+        } == true
+
+    private fun positionColorNormal(pipeline: RenderPipeline): Boolean =
+        pipeline.getVertexFormatBinding(0)?.let {
+            it.contains("Position") && it.contains("Color") && it.contains("Normal")
+        } == true
+
+    private fun positionTexture(pipeline: RenderPipeline): Boolean =
+        pipeline.getVertexFormatBinding(0)?.let {
+            it.contains("Position") && it.contains("UV0") && it.getElements().size == 2
         } == true
 
     private fun loadResource(id: Identifier, type: ShaderType?): String? {

@@ -74,4 +74,18 @@ void main() { gl_FragColor = texture2D(texture, texcoord); }
         assertFalse(vertex.contains("layout(location = 3) in ivec2 UV1;"))
         assertFalse(vertex.contains("gl_Normal"))
     }
+
+    @Test
+    fun `auxiliary stages match colored line and textured sky formats`() {
+        val colored = LegacyTranslator.coloredVertex(sky.copy(
+            name = "gbuffers_line",
+            vertexSource = sky.vertexSource.replace("gl_Vertex.xy", "gl_Color.rgb + gl_Normal"),
+        ), includeNormal = true)
+        assertContains(colored, "layout(location = 1) in vec4 Color;")
+        assertContains(colored, "layout(location = 2) in vec3 Normal;")
+
+        val textured = LegacyTranslator.texturedSkyVertex(particle.copy(name = "gbuffers_skytextured"))
+        assertContains(textured, "layout(location = 1) in vec2 UV0;")
+        assertContains(textured, "vec4(UV0, 0.0, 1.0)")
+    }
 }

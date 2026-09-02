@@ -437,6 +437,13 @@ object PackChain {
             runCatching { pass.setUniform(name, view, sampler) }
         }
         staticByName["noisetex"]?.let { runCatching { pass.setUniform("noisetex", it.view, it.sampler) } }
+        if ("Sampler0" in DynamicRenderer.samplerNames()) {
+            val atlas = Minecraft.getInstance().textureManager
+                .getTexture(net.minecraft.client.renderer.texture.TextureAtlas.LOCATION_BLOCKS).textureView
+            runCatching { pass.setUniform(
+                "Sampler0", atlas, RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST),
+            ) }
+        }
         bind("Sampler2", Minecraft.getInstance().gameRenderer.lightmap())
         bind("depthtex0", depthViews[0] ?: scene)
         bind("depthtex1", depthViews[1] ?: scene)

@@ -164,6 +164,7 @@ vec4 vertexPackAlphaTest(vec4 value) {
         var body = program.vertexSource
             .replace(Regex("""^\s*#(?:version|extension)[^\n]*""", RegexOption.MULTILINE), "")
             .replace(VARYING, "")
+            .replace(Regex("""(?m)^\s*uniform\s+mat[34]\s+(?:projectionMatrix|modelViewMatrix|normalMatrix)\s*;\s*$"""), "")
             .replace(Regex("""(?m)^\s*(?:attribute|in)\s+(?:(?:lowp|mediump|highp)\s+)?\w+\s+\w+\s*;"""), "")
             .let(::modernizeTextureCalls)
             .replace(Regex("""\bgl_ModelViewProjectionMatrix\b"""), "(ProjMat * ModelViewMat)")
@@ -230,6 +231,7 @@ $outputs
         var body = program.vertexSource
             .replace(Regex("""^\s*#(?:version|extension)[^\n]*""", RegexOption.MULTILINE), "")
             .replace(VARYING, "")
+            .replace(Regex("""(?m)^\s*uniform\s+mat[34]\s+(?:projectionMatrix|modelViewMatrix|normalMatrix)\s*;\s*$"""), "")
             .replace(Regex("""(?m)^\s*(?:attribute|in)\s+(?:(?:lowp|mediump|highp)\s+)?\w+\s+\w+\s*;"""), "")
             .replace(Regex("""\bgl_ModelViewProjectionMatrix\b"""), "(ProjMat * ModelViewMat)")
             .replace(Regex("""\bgl_ModelViewMatrix\b"""), "ModelViewMat")
@@ -278,8 +280,91 @@ $outputs
 """ + body.trimStart()
     }
 
+    fun coloredVertex(program: LoadedProgram, includeNormal: Boolean = false): String =
+        auxiliaryVertex(program, includeColor = true, includeUv = false, includeNormal = includeNormal)
+
+    fun texturedSkyVertex(program: LoadedProgram): String =
+        auxiliaryVertex(program, includeColor = false, includeUv = true, includeNormal = false, includeFog = false)
+
+    private fun auxiliaryVertex(
+        program: LoadedProgram,
+        includeColor: Boolean,
+        includeUv: Boolean,
+        includeNormal: Boolean,
+        includeFog: Boolean = true,
+    ): String {
+        val varyings = varyingDeclarations(program.vertexSource)
+        val tangentAttribute = TANGENT_ATTRIBUTE.find(program.vertexSource)?.groupValues?.get(1)
+        var body = program.vertexSource
+            .replace(Regex("""^\s*#(?:version|extension)[^\n]*""", RegexOption.MULTILINE), "")
+            .replace(VARYING, "")
+            .replace(Regex("""(?m)^\s*uniform\s+mat[34]\s+(?:projectionMatrix|modelViewMatrix|normalMatrix)\s*;\s*$"""), "")
+            .replace(Regex("""(?m)^\s*(?:attribute|in)\s+(?:(?:lowp|mediump|highp)\s+)?\w+\s+\w+\s*;"""), "")
+            .replace(Regex("""\bgl_ModelViewProjectionMatrix\b"""), "(ProjMat * ModelViewMat)")
+            .replace(Regex("""\bgl_ModelViewMatrix\b"""), "ModelViewMat")
+            .replace(Regex("""\bgl_ProjectionMatrix\b"""), "ProjMat")
+            .replace(Regex("""\bprojectionMatrix\b"""), "ProjMat")
+            .replace(Regex("""\bmodelViewMatrix\b"""), "ModelViewMat")
+            .replace(Regex("""\bnormalMatrix\b"""), "mat3(ModelViewMat)")
+            .replace(Regex("""\bvaPosition\b"""), "Position")
+            .replace(Regex("""\bvaNormal\b"""), if (includeNormal) "Normal" else "vec3(0.0, 1.0, 0.0)")
+            .replace(Regex("""\bvaColor\b"""), if (includeColor) "Color" else "ColorModulator")
+            .replace(Regex("""\bvaUV0\b"""), if (includeUv) "UV0" else "vec2(0.0)")
+            .replace(Regex("""\bvaUV1\b"""), "ivec2(0)")
+            .replace(Regex("""\bvaUV2\b"""), "ivec2(0)")
+            .replace(Regex("""\bgl_VertexID\b"""), "gl_VertexIndex")
+            .replace(Regex("""\bgl_NormalMatrix\b"""), "mat3(ModelViewMat)")
+            .replace(Regex("""\bgl_Normal\b"""), if (includeNormal) "Normal" else "vec3(0.0, 1.0, 0.0)")
+            .replace(Regex("""\bgl_TextureMatrix\s*\[\s*0\s*]"""), "mat4(1.0)")
+            .replace(Regex("""\bgl_TextureMatrix\s*\[\s*[12]\s*]"""), "mat4(1.0)")
+            .replace(Regex("""\bgl_MultiTexCoord0\b"""), if (includeUv) "vec4(UV0, 0.0, 1.0)" else "vec4(0.0)")
+            .replace(Regex("""\bgl_MultiTexCoord[12]\b"""), "vec4(0.0)")
+            .replace(Regex("""\bgl_Color\b"""), if (includeColor) "Color" else "ColorModulator")
+            .replace(Regex("""\bgl_Vertex\b"""), "vec4(Position, 1.0)")
+            .replace(Regex("""\bftransform\s*\(\s*\)"""), "(ProjMat * ModelViewMat * vec4(Position, 1.0))")
+            .replace(Regex("""\bmc_midTexCoord\b"""), if (includeUv) "vec2(UV0)" else "vec2(0.0)")
+            .replace(Regex("""\bmc_Entity\b"""), "vec4(0.0)")
+            .replace(Regex("""\bat_midBlock\b"""), "vec3(0.0)")
+            .let(::modernizeTextureCalls)
+            .let(LegacyUniformTranslator::translate)
+        tangentAttribute?.let { attribute ->
+            body = body.replace(Regex("""\b${Regex.escape(attribute)}\b"""), "vec4(1.0, 0.0, 0.0, 1.0)")
+        }
+        val main = Regex("""void\s+main\s*\(\s*\)\s*\{""").find(body)
+            ?: error("${program.name}: auxiliary vertex shader has no main()")
+        if (includeFog) body = body.replaceRange(main.range, main.value + """
+    sphericalVertexDistance = fog_spherical_distance(Position);
+    cylindricalVertexDistance = fog_cylindrical_distance(Position);
+""")
+        val outputs = varyingDeclarations(program.vertexSource).entries.map { (name, type) ->
+            val location = varyingLocations(varyings, 2).getValue(name)
+            "layout(location = $location) ${interpolation(type)}out $type $name;"
+        }.joinToString("\n")
+        val inputs = buildList {
+            add("layout(location = 0) in vec3 Position;")
+            if (includeColor) add("layout(location = 1) in vec4 Color;")
+            if (includeUv) add("layout(location = 1) in vec2 UV0;")
+            if (includeNormal) add("layout(location = 2) in vec3 Normal;")
+        }.joinToString("\n")
+        return """#version 450
+#extension GL_ARB_separate_shader_objects : require
+${if (includeFog) "#include <minecraft:fog.glsl>" else ""}
+#include <minecraft:dynamictransforms.glsl>
+#include <minecraft:projection.glsl>
+$inputs
+${if (includeFog) """layout(location = 0) out float sphericalVertexDistance;
+layout(location = 1) out float cylindricalVertexDistance;""" else ""}
+$outputs
+""" + body.trimStart()
+    }
+
     /** Translates the fragment half while preserving the pack's varying names. */
-    fun dynamicFragment(program: LoadedProgram, dropExtraTargets: Boolean = false, reverseDepth: Boolean = false): String {
+    fun dynamicFragment(
+        program: LoadedProgram,
+        dropExtraTargets: Boolean = false,
+        reverseDepth: Boolean = false,
+        includeFog: Boolean = true,
+    ): String {
         val varyings = varyingDeclarations(program.vertexSource)
         val fragmentVaryings = varyingDeclarations(program.fragmentSource)
         require(fragmentVaryings.keys.all(varyings::containsKey)) { "dynamic fragment references an undeclared varying" }
@@ -301,12 +386,13 @@ $outputs
             "dynamic fragment programs must write only render target 0"
         }
         val lightmap = if (body.contains("Sampler2")) "uniform sampler2D Sampler2;" else ""
+        val atlas = if (body.contains("Sampler0")) "uniform sampler2D Sampler0;" else ""
         return """#version 450
 #extension GL_ARB_separate_shader_objects : require
-#include <minecraft:fog.glsl>
+${if (includeFog) "#include <minecraft:fog.glsl>" else ""}
 #include <minecraft:dynamictransforms.glsl>
 #include <minecraft:oit.glsl>
-uniform sampler2D Sampler0;
+$atlas
 $lightmap
 layout(location = 0) out vec4 fragColor;
 vec4 vertexPackAlphaTest(vec4 value) {
