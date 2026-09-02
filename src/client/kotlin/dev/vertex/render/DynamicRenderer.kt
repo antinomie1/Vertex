@@ -321,6 +321,11 @@ object DynamicRenderer {
             RenderPipelines.ITEM_TRANSLUCENT_GLINT,
             RenderPipelines.ITEM_TRANSLUCENT_GLINT_SPECIAL,
         ))
+        entity("gbuffers_hand_water", listOf(
+            RenderPipelines.ITEM_TRANSLUCENT,
+            RenderPipelines.ITEM_TRANSLUCENT_GLINT,
+            RenderPipelines.ITEM_TRANSLUCENT_GLINT_SPECIAL,
+        ))
         entity("gbuffers_armor_glint", listOf(
             RenderPipelines.ARMOR_CUTOUT_NO_CULL_GLINT,
             RenderPipelines.ENTITY_SOLID_GLINT,
