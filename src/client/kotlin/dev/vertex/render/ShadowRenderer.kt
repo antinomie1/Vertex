@@ -161,7 +161,7 @@ object ShadowRenderer {
             val pack = PackFrontend.loadShadow(root, PackRuntime.options(), PackRuntime.dimension())
             parseShadowConstants(pack?.vertexSource)
             val requirements = pack?.let { dev.vertex.translate.TerrainRequirementScanner.scan(it.vertexSource) }
-            val separateAo = PackSemanticsParser.load(root, PackRuntime.options()).separateAo
+            val separateAo = PackSemanticsParser.load(root, PackRuntime.options(), PackRuntime.dimension()).separateAo
             compile(device, colorView != null, pack, separateAo, requirements?.midTexCoord == true)
             device.createCommandEncoder().createRenderPass(descriptor()).close()
             Vertex.log.info("[Vertex] shadow pass armed: {}x{}, samplers={}", resolution, resolution, requested.sorted())

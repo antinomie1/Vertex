@@ -60,6 +60,7 @@ object TerrainMesh {
     private val currentMidUv = ThreadLocal.withInitial { FloatArray(2) }
     private val midUvActive = ThreadLocal.withInitial { false }
     private val shaderId = Identifier.fromNamespaceAndPath("vertex", "terrain_mesh")
+    private val solidShaderId = Identifier.fromNamespaceAndPath("vertex", "terrain_solid_mesh")
     private val waterShaderId = Identifier.fromNamespaceAndPath("vertex", "water_mesh")
     // Fluid/translucent meshes use a different vanilla contract and are handled by
     // the water family; keep the widened opaque format off those buffers.
@@ -108,22 +109,26 @@ object TerrainMesh {
             val runDir = Minecraft.getInstance().gameDirectory.toPath()
             val packRoot = PackRuntime.root(runDir)
             val dimension = PackRuntime.dimension()
-            val terrainProg = dev.vertex.frontend.PackFrontend.loadTerrain(packRoot, PackRuntime.options(), dimension)
-            val waterProg = dev.vertex.frontend.PackFrontend.loadWater(packRoot, PackRuntime.options(), dimension)
+            val options = PackRuntime.options()
+            val terrainProg = dev.vertex.frontend.PackFrontend.loadTerrain(packRoot, options, dimension)
+            val solidProg = dev.vertex.frontend.PackFrontend.loadProgram(
+                packRoot, "gbuffers_terrain_solid", options, dimension,
+            )
+            val waterProg = dev.vertex.frontend.PackFrontend.loadWater(packRoot, options, dimension)
             blockMaterials = BlockMaterialMap.load(packRoot.resolve("shaders/block.properties")).also {
                 Vertex.log.info("[Vertex] terrain block material map: {} rules", it.size)
             }
-            separateAo = PackSemanticsParser.load(packRoot, PackRuntime.options(), dimension).separateAo
-            noiseSampler = (terrainProg.samplers + waterProg?.samplers.orEmpty()).contains("noisetex")
-            packSamplers = (terrainProg.samplers + waterProg?.samplers.orEmpty()).toSet()
+            separateAo = PackSemanticsParser.load(packRoot, options, dimension).separateAo
+            val layerPrograms = listOfNotNull(terrainProg, solidProg, waterProg)
+            noiseSampler = layerPrograms.flatMap { it.samplers }.contains("noisetex")
+            packSamplers = layerPrograms.flatMap { it.samplers }.toSet()
             createMaterialTextures(device)
-            val terrainRequirements = TerrainRequirementScanner.scan(terrainProg.vertexSource)
-            val waterRequirements = waterProg?.let { TerrainRequirementScanner.scan(it.vertexSource) }
+            val layerRequirements = layerPrograms.map { TerrainRequirementScanner.scan(it.vertexSource) }
             requirements = TerrainRequirements(
-                terrainRequirements.entity || waterRequirements?.entity == true,
-                terrainRequirements.midTexCoord || waterRequirements?.midTexCoord == true,
-                terrainRequirements.midBlock || waterRequirements?.midBlock == true,
-                terrainRequirements.tangent || waterRequirements?.tangent == true,
+                layerRequirements.any(TerrainRequirements::entity),
+                layerRequirements.any(TerrainRequirements::midTexCoord),
+                layerRequirements.any(TerrainRequirements::midBlock),
+                layerRequirements.any(TerrainRequirements::tangent),
             )
             terrainLayers = if (waterProg != null) opaqueLayers + ChunkSectionLayer.TRANSLUCENT else opaqueLayers
             customFormat = format(requirements)
@@ -134,7 +139,17 @@ object TerrainMesh {
                 PackChain.usesReverseDepth(),
             )
             val source = shaderSource(translatedVsh, translatedFsh)
-            val solid = createPipelinePair(ChunkSectionLayer.SOLID)
+            val solidSource = solidProg?.let {
+                shaderSource(
+                    dev.vertex.translate.LegacyTranslator.terrainVertex(it, separateAo, requirements),
+                    dev.vertex.translate.LegacyTranslator.terrainFragment(it, separateAo, PackChain.usesReverseDepth()),
+                    solidShaderId,
+                )
+            }
+            val solid = createPipelinePair(
+                ChunkSectionLayer.SOLID,
+                if (solidSource == null) shaderId else solidShaderId,
+            )
             val cutout = createPipelinePair(ChunkSectionLayer.CUTOUT)
             val water = waterProg?.let { createPipelinePair(ChunkSectionLayer.TRANSLUCENT, waterShaderId) }
             val waterSource = waterProg?.let {
@@ -145,7 +160,11 @@ object TerrainMesh {
                 )
             }
             val compiled = IdentityHashMap<RenderPipeline, CompiledRenderPipeline>(6)
-            listOf(solid.base, solid.multidraw, cutout.base, cutout.multidraw).forEach { pipeline ->
+            listOf(solid.base, solid.multidraw).forEach { pipeline ->
+                compiled[pipeline] = device.compilePipeline(pipeline, solidSource ?: source)
+                    ?: error("RenderPearl rejected ${pipeline.location}")
+            }
+            listOf(cutout.base, cutout.multidraw).forEach { pipeline ->
                 compiled[pipeline] = device.compilePipeline(pipeline, source)
                     ?: error("RenderPearl rejected ${pipeline.location}")
             }
@@ -159,6 +178,7 @@ object TerrainMesh {
                 "[Vertex] terrain mesh surgery armed: stride={} layers={} (pack terrain programs translated)",
                 customFormat.getVertexSize(), if (water != null) "solid,cutout,water" else "solid,cutout"
             )
+            if (solidProg != null) Vertex.log.info("[Vertex] specialized solid terrain program armed")
         } catch (t: Throwable) {
             prepared = null
             closeMaterialTextures()
