@@ -15,7 +15,9 @@ class ShaderPreprocessor(
 
     init { require(this.roots.isNotEmpty()) }
 
-    fun process(entry: Path): String = stripComments(expand(resolve(entry, null), ArrayDeque()))
+    fun process(entry: Path): String = stripComments(
+        expand(resolve(entry.toAbsolutePath().normalize(), null), ArrayDeque()),
+    )
 
     private fun expand(file: Path, stack: ArrayDeque<Path>): String {
         require(file !in stack) { "include cycle: ${(stack + file).joinToString(" -> ")}" }

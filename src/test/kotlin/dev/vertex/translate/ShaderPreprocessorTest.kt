@@ -1,6 +1,7 @@
 package dev.vertex.translate
 
 import java.nio.file.Files
+import java.nio.file.Path
 import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertContains
@@ -9,6 +10,22 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 
 class ShaderPreprocessorTest {
+    @Test
+    fun `accepts an entry below a relative shader root`() {
+        val workingDirectory = Path.of("").toAbsolutePath()
+        val root = Files.createTempDirectory(workingDirectory, "vertex-relative-root-")
+        try {
+            val source = root.resolve("main.glsl")
+            source.writeText("float valid = 1.0;\n")
+            val relativeRoot = workingDirectory.relativize(root)
+            val output = ShaderPreprocessor(listOf(relativeRoot)).process(relativeRoot.resolve("main.glsl"))
+            assertContains(output, "float valid = 1.0;")
+        } finally {
+            Files.deleteIfExists(root.resolve("main.glsl"))
+            Files.deleteIfExists(root)
+        }
+    }
+
     @Test
     fun `includes and folds option conditionals`() {
         val root = Files.createTempDirectory("vertex-preprocessor")
