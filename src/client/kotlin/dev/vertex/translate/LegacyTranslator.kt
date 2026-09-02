@@ -484,7 +484,14 @@ $outputs
             .replace(Regex("""\bat_midBlock\b"""), "((fract(Position) - vec3(0.5)) * 64.0)")
             .replace(Regex("""\b(?:tex|texture|gtexture)\b(?!\s*\()"""), "Sampler0")
             .let(::modernizeTextureCalls)
-            .let(LegacyUniformTranslator::translate)
+            .let { source ->
+                LegacyUniformTranslator.translate(
+                    source,
+                    SHADOW_MATRIX_UNIFORMS.filterTo(linkedSetOf()) { name ->
+                        Regex("""\b${Regex.escape(name)}\b""").containsMatchIn(source)
+                    },
+                )
+            }
         tangentAttribute?.let { attribute ->
             body = body.replace(Regex("""\b${Regex.escape(attribute)}\b"""), "vec4(0.0, 0.0, 1.0, 1.0)")
         }
@@ -577,6 +584,9 @@ layout(std140) uniform ShadowUniforms { mat4 vertexShadowMvp; };
     private val VARYING = Regex("""varying\s+(?:(?:lowp|mediump|highp)\s+)?(\w+)\s+([^;]+);""")
     private val TANGENT_ATTRIBUTE = Regex(
         """(?m)^\s*(?:attribute|in)\s+(?:(?:lowp|mediump|highp)\s+)?vec4\s+(at_tangent|tangent)\s*;""",
+    )
+    private val SHADOW_MATRIX_UNIFORMS = setOf(
+        "shadowModelView", "shadowModelViewInverse", "shadowProjection", "shadowProjectionInverse",
     )
     private val MODERN_FRAGMENT_OUTPUT = Regex(
         """(?m)^\s*(?:layout\s*\(\s*location\s*=\s*0\s*\)\s*)?out\s+(float|vec[234])\s+([A-Za-z_]\w*)\s*;\s*$""",

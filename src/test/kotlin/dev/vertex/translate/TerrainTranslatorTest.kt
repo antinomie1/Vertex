@@ -67,6 +67,19 @@ class TerrainTranslatorTest {
         assertContains(vertex, "vertexShadowMvp * vec4(vertexShadowPos, 1.0)")
     }
 
+    @Test fun `declares shadow matrices introduced by fixed function translation`() {
+        val program = LoadedProgram(
+            "shadow-fixed-function",
+            "#version 120\nvoid main() { gl_Position = ftransform(); }",
+            "#version 120\nvoid main() { gl_FragColor = vec4(1.0); }",
+            null, emptyList(), listOf(0), emptySet(),
+        )
+        val vertex = LegacyTranslator.shadowVertex(program)
+        assertContains(vertex, "uniform VertexPackUniforms")
+        assertContains(vertex, "mat4 shadowProjection;")
+        assertContains(vertex, "mat4 shadowModelView;")
+    }
+
     @Test fun `emulates filtered shadow comparison before terrain shading`() {
         val program = LoadedProgram(
             "terrain-shadow",

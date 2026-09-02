@@ -85,8 +85,11 @@ object LegacyUniformTranslator {
         }
     }.toSet()
 
-    fun translate(source: String): String {
-        val implicit = mutableSetOf<String>()
+    fun translate(source: String, requiredUniforms: Set<String> = emptySet()): String {
+        require(requiredUniforms.all(PackUniformCatalog.specs::containsKey)) {
+            "unknown required shader uniforms: ${requiredUniforms - PackUniformCatalog.specs.keys}"
+        }
+        val implicit = requiredUniforms.toMutableSet()
         if (Regex("""\bgl_Fog\.start\b""").containsMatchIn(source)) implicit += "fogStart"
         if (Regex("""\bgl_Fog\.(?:end|scale)\b""").containsMatchIn(source)) implicit += setOf("fogStart", "fogEnd")
         if (Regex("""\bgl_Fog\.color\b""").containsMatchIn(source)) implicit += "fogColor"

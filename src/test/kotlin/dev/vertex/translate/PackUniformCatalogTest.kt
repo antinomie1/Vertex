@@ -58,4 +58,14 @@ class PackUniformCatalogTest {
         assertContains(translated, "float vertexUniform_timeAngle;")
         assertContains(translated, "(1.0 / max(fogEnd - fogStart, 0.0001))")
     }
+
+    @Test
+    fun `exposes translator required uniforms without loose declarations`() {
+        val translated = LegacyUniformTranslator.translate(
+            "void main() { gl_Position = shadowProjection * shadowModelView * vec4(0.0); }",
+            setOf("shadowProjection", "shadowModelView"),
+        )
+        assertContains(translated, "mat4 shadowProjection;")
+        assertContains(translated, "mat4 shadowModelView;")
+    }
 }
