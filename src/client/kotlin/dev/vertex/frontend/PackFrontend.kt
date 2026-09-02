@@ -63,8 +63,7 @@ object PackFrontend {
         val varying = Regex("""varying\s+\w+\s+(\w+)\s*;""").findAll(vsh)
             .map { it.groupValues[1] }.firstOrNull()
 
-        val samplers = SAMPLER.findAll(fsh)
-            .map { it.groupValues[1] }.toList()
+        val samplers = samplers(vsh, fsh)
 
         return LoadedProgram(name, vsh, fsh, varying, samplers, outputs,
             LegacyUniformTranslator.uniforms(vsh) + LegacyUniformTranslator.uniforms(fsh))
@@ -77,8 +76,7 @@ object PackFrontend {
         val fshFile = sh.resolve("gbuffers_terrain.fsh")
         val vsh = if (Files.isRegularFile(vshFile)) normalizeInterfaces(ShaderPreprocessor(includeRoots(sh), options).process(vshFile), true) else SamplePack.TERRAIN_VSH
         val fsh = if (Files.isRegularFile(fshFile)) normalizeInterfaces(ShaderPreprocessor(includeRoots(sh), options).process(fshFile), false) else SamplePack.TERRAIN_FSH
-        val samplers = SAMPLER.findAll(fsh)
-            .map { it.groupValues[1] }.toList()
+        val samplers = samplers(vsh, fsh)
         return LoadedProgram("gbuffers_terrain", vsh, fsh, null, samplers, outputs(fsh), emptySet())
     }
 
@@ -100,6 +98,13 @@ object PackFrontend {
 
     fun loadBlock(packRoot: Path, options: Map<String, String> = emptyMap(), dimension: String? = null): LoadedProgram? =
         loadPair(packRoot, listOf("gbuffers_block", "gbuffers_damagedblock"), options, dimension)
+
+    fun loadProgram(
+        packRoot: Path,
+        name: String,
+        options: Map<String, String> = emptyMap(),
+        dimension: String? = null,
+    ): LoadedProgram? = loadPair(packRoot, listOf(name), options, dimension)
 
     fun loadParticle(packRoot: Path, options: Map<String, String> = emptyMap(), dimension: String? = null): LoadedProgram? =
         loadPair(packRoot, listOf("gbuffers_particles", "gbuffers_particle"), options, dimension)
@@ -130,9 +135,12 @@ object PackFrontend {
         val (sh, stem) = match
         val vsh = normalizeInterfaces(ShaderPreprocessor(includeRoots(sh), options).process(sh.resolve("$stem.vsh")), true)
         val fsh = normalizeInterfaces(ShaderPreprocessor(includeRoots(sh), options).process(sh.resolve("$stem.fsh")), false)
-        val samplers = SAMPLER.findAll(fsh).map { it.groupValues[1] }.toList()
+        val samplers = samplers(vsh, fsh)
         return LoadedProgram(stem, vsh, fsh, null, samplers, outputs(fsh), emptySet())
     }
+
+    private fun samplers(vertexSource: String, fragmentSource: String): List<String> =
+        SAMPLER.findAll("$vertexSource\n$fragmentSource").map { it.groupValues[1] }.distinct().toList()
 
     private fun hasPair(sh: Path, stem: String) =
         Files.isRegularFile(sh.resolve("$stem.vsh")) && Files.isRegularFile(sh.resolve("$stem.fsh"))

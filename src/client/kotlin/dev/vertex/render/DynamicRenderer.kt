@@ -144,6 +144,7 @@ object DynamicRenderer {
             } else if (entityPipelines.none(pipelines::containsKey)) {
                 context.health.downgrade(ProgramFamily.HAND, RenderTier.TIER_1, "entity shader bridge unavailable")
             }
+            compileSpecializedPrograms(gpu, root, options, dimension)
             compileOptionalSceneFamilies(gpu, root, dimension)
         } catch (t: Throwable) {
             disable("dynamic pipeline preparation", t)
@@ -254,6 +255,88 @@ object DynamicRenderer {
         return failures
     }
 
+    private fun compileSpecializedPrograms(
+        gpu: GpuDevice,
+        root: java.nio.file.Path,
+        options: Map<String, String>,
+        dimension: String,
+    ) {
+        var groups = 0
+        var pipelineCount = 0
+        fun entity(name: String, originals: List<RenderPipeline>) {
+            val program = PackFrontend.loadProgram(root, name, options, dimension) ?: return
+            samplerNames = samplerNames + program.samplers
+            val armed = compileOverride(
+                gpu, program, originals, ::compatible,
+                LegacyTranslator.dynamicVertex(program),
+                LegacyTranslator.dynamicFragment(program, dropExtraTargets = true, reverseDepth = PackChain.usesReverseDepth()),
+            )
+            if (armed > 0) { groups++; pipelineCount += armed }
+        }
+        fun block(name: String, originals: List<RenderPipeline>) {
+            val program = PackFrontend.loadProgram(root, name, options, dimension) ?: return
+            samplerNames = samplerNames + program.samplers
+            val armed = compileOverride(
+                gpu, program, originals, ::blockCompatible,
+                LegacyTranslator.blockVertex(program),
+                LegacyTranslator.dynamicFragment(program, dropExtraTargets = true, reverseDepth = PackChain.usesReverseDepth()),
+            )
+            if (armed > 0) { groups++; pipelineCount += armed }
+        }
+
+        entity("gbuffers_entities_translucent", listOf(
+            RenderPipelines.ENTITY_TRANSLUCENT,
+            RenderPipelines.ENTITY_TRANSLUCENT_CULL,
+        ))
+        entity("gbuffers_entities_glowing", listOf(RenderPipelines.ENTITY_TRANSLUCENT_EMISSIVE))
+        entity("gbuffers_spidereyes", listOf(RenderPipelines.EYES))
+        entity("gbuffers_hand", listOf(
+            RenderPipelines.ITEM_CUTOUT,
+            RenderPipelines.ITEM_CUTOUT_GLINT,
+            RenderPipelines.ITEM_CUTOUT_GLINT_SPECIAL,
+            RenderPipelines.ITEM_TRANSLUCENT,
+            RenderPipelines.ITEM_TRANSLUCENT_GLINT,
+            RenderPipelines.ITEM_TRANSLUCENT_GLINT_SPECIAL,
+        ))
+        entity("gbuffers_armor_glint", listOf(
+            RenderPipelines.ARMOR_CUTOUT_NO_CULL_GLINT,
+            RenderPipelines.ENTITY_SOLID_GLINT,
+        ))
+        block("gbuffers_block_translucent", listOf(RenderPipelines.TRANSLUCENT_BLOCK))
+        block("gbuffers_damagedblock", listOf(RenderPipelines.CRUMBLING))
+        if (groups > 0) Vertex.log.info(
+            "[Vertex] specialized material bridges armed: {} groups, {} pipelines",
+            groups, pipelineCount,
+        )
+    }
+
+    private fun compileOverride(
+        gpu: GpuDevice,
+        program: dev.vertex.frontend.LoadedProgram,
+        originals: List<RenderPipeline>,
+        compatible: (RenderPipeline) -> Boolean,
+        vertex: String,
+        fragment: String,
+    ): Int {
+        val shaderId = Identifier.fromNamespaceAndPath("vertex", "dynamic_${program.name}")
+        val previous = originals.associateWith { pipelines[it] }
+        val failures = compileGroup(
+            gpu,
+            originals,
+            shaderId,
+            shaderSource(shaderId, vertex, fragment),
+            compatible,
+            program.samplers.toSet(),
+            setOf("EMISSIVE"),
+        )
+        val armed = originals.count { pipelines[it] !== previous[it] }
+        if (armed == 0 && failures > 0) Vertex.log.warn(
+            "[Vertex] specialized material program {} rejected by {} pipelines; retaining base bridge",
+            program.name, failures,
+        )
+        return armed
+    }
+
     private fun compileOptionalSceneFamilies(gpu: GpuDevice, root: java.nio.file.Path, dimension: String) {
         val options = PackRuntime.options()
         var skyArmed = false
@@ -310,6 +393,26 @@ object DynamicRenderer {
                 if (particleArmed) Vertex.log.info("[Vertex] particle render bridge armed")
                 if (skipped > 0) Vertex.log.debug("[Vertex] skipped {} particle pipelines", skipped)
             }.onFailure { Vertex.log.warn("[Vertex] particle shader rejected; retaining vanilla path", it) }
+        }
+        PackFrontend.loadProgram(root, "gbuffers_particles_translucent", options, dimension)?.let { program ->
+            samplerNames = samplerNames + program.samplers
+            runCatching {
+                val armed = compileOverride(
+                    gpu,
+                    program,
+                    listOf(RenderPipelines.TRANSLUCENT_PARTICLE),
+                    ::particle,
+                    LegacyTranslator.particleVertex(program),
+                    LegacyTranslator.dynamicFragment(
+                        program,
+                        dropExtraTargets = true,
+                        reverseDepth = PackChain.usesReverseDepth(),
+                    ),
+                )
+                if (armed > 0) Vertex.log.info("[Vertex] translucent particle material bridge armed")
+            }.onFailure { Vertex.log.warn(
+                "[Vertex] translucent particle shader rejected; retaining base particle bridge", it,
+            ) }
         }
         weatherProgram?.let { program ->
             runCatching {

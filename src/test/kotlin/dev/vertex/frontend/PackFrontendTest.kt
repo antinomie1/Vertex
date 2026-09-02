@@ -93,6 +93,23 @@ class PackFrontendTest {
     }
 
     @Test
+    fun `discovers samplers declared by either shader stage`() {
+        val pack = Files.createTempDirectory("vertex-pack-stage-samplers")
+        val shaders = pack.resolve("shaders").createDirectories()
+        shaders.resolve("composite.vsh").writeText(
+            "uniform sampler2D vertexTexture;\nvoid main() { gl_Position = vec4(0.0); }\n",
+        )
+        shaders.resolve("composite.fsh").writeText(
+            "uniform sampler2D fragmentTexture;\nvoid main() { gl_FragColor = vec4(1.0); }\n",
+        )
+
+        assertEquals(
+            listOf("vertexTexture", "fragmentTexture"),
+            PackFrontend.loadScreenChain(pack).single().samplers,
+        )
+    }
+
+    @Test
     fun `normalizes modern stage interfaces for legacy translation`() {
         val pack = Files.createTempDirectory("vertex-pack-modern-interface")
         val shaders = pack.resolve("shaders").createDirectories()
