@@ -45,6 +45,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Optional
 import java.util.OptionalDouble
+import java.util.IdentityHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** Real light-space depth pass for the visible opaque terrain set. */
@@ -57,8 +58,7 @@ object ShadowRenderer {
     private var colorTexture: GpuTexture? = null
     private var colorView: GpuTextureView? = null
     private var uniformBuffer: GpuBuffer? = null
-    private var base: CompiledRenderPipeline? = null
-    private var multidraw: CompiledRenderPipeline? = null
+    private val compiled = IdentityHashMap<RenderPipeline, CompiledRenderPipeline>()
     private var active = false
     private const val SHADOW_SLOTS = 4
     private const val SHADOW_SLOT_BYTES = 256L
@@ -91,9 +91,10 @@ object ShadowRenderer {
         runCatching { depthView?.close() }; runCatching { depthTexture?.close() }
         runCatching { colorView?.close() }; runCatching { colorTexture?.close() }
         runCatching { uniformBuffer?.close() }
-        listOf(base, multidraw).filterNotNull().distinct().forEach { runCatching { it.close() } }
+        compiled.values.distinct().forEach { runCatching { it.close() } }
+        compiled.clear()
         depthView = null; depthTexture = null; colorView = null; colorTexture = null; uniformBuffer = null
-        base = null; multidraw = null; active = false; failed = false; discovered = false; requested = emptySet(); packSamplerNames = emptySet(); slot = 0
+        active = false; failed = false; discovered = false; requested = emptySet(); packSamplerNames = emptySet(); slot = 0
         shadowDistance = 160f; sunPathRotation = 0f
         logged.set(false); cacheLogged.set(false); cache.invalidate()
         shadowValid = false
@@ -132,7 +133,7 @@ object ShadowRenderer {
         if (!PackRuntime.isEnabled()) return
         if (SharedVulkanContext.attach().tier(ProgramFamily.TERRAIN_OPAQUE) != RenderTier.TIER_2 ||
             SharedVulkanContext.attach().tier(ProgramFamily.SCREEN_CHAIN) != RenderTier.TIER_2) return
-        if (failed || base != null) return
+        if (failed || compiled.isNotEmpty()) return
         try {
             discover()
             if (requested.isEmpty()) return
@@ -158,11 +159,20 @@ object ShadowRenderer {
                 { "vertex-shadow-matrix" }, GpuBuffer.USAGE_UNIFORM or GpuBuffer.USAGE_COPY_DST,
                 SHADOW_SLOT_BYTES * SHADOW_SLOTS,
             )
-            val pack = PackFrontend.loadShadow(root, PackRuntime.options(), PackRuntime.dimension())
+            val options = PackRuntime.options()
+            val dimension = PackRuntime.dimension()
+            val pack = PackFrontend.loadShadow(root, options, dimension)
+            val layerPrograms = mapOf(
+                ChunkSectionLayer.SOLID to (PackFrontend.loadProgram(root, "shadow_solid", options, dimension) ?: pack),
+                ChunkSectionLayer.CUTOUT to (
+                    PackFrontend.loadProgram(root, "shadow_cutout", options, dimension)
+                        ?: PackFrontend.loadProgram(root, "shadow_block", options, dimension)
+                        ?: pack
+                ),
+            )
             parseShadowConstants(pack?.vertexSource)
-            val requirements = pack?.let { dev.vertex.translate.TerrainRequirementScanner.scan(it.vertexSource) }
-            val separateAo = PackSemanticsParser.load(root, PackRuntime.options(), PackRuntime.dimension()).separateAo
-            compile(device, colorView != null, pack, separateAo, requirements?.midTexCoord == true)
+            val separateAo = PackSemanticsParser.load(root, options, dimension).separateAo
+            compile(device, colorView != null, pack, layerPrograms, separateAo)
             device.createCommandEncoder().createRenderPass(descriptor()).close()
             Vertex.log.info("[Vertex] shadow pass armed: {}x{}, samplers={}", resolution, resolution, requested.sorted())
         } catch (t: Throwable) {
@@ -174,7 +184,7 @@ object ShadowRenderer {
     @JvmStatic
     fun render(sections: ChunkSectionsToRender) {
         prepare()
-        if (failed || base == null || !TerrainMesh.isPrepared()) return
+        if (failed || compiled.isEmpty() || !TerrainMesh.isPrepared()) return
         try {
             val mc = Minecraft.getInstance()
             val angle = shadowAngle(mc)
@@ -235,11 +245,7 @@ object ShadowRenderer {
     @JvmStatic
     fun compiledFor(pipeline: RenderPipeline): CompiledRenderPipeline? {
         if (!active) return null
-        return when (TerrainMesh.isMultidrawPipeline(pipeline)) {
-            true -> multidraw
-            false -> base
-            null -> null
-        }
+        return compiled[pipeline]
     }
 
     fun view(name: String): GpuTextureView? = when (name) {
@@ -248,7 +254,7 @@ object ShadowRenderer {
         else -> null
     }
 
-    fun uniformMatrix(name: String): Matrix4f? = if (base == null) null else when (name) {
+    fun uniformMatrix(name: String): Matrix4f? = if (compiled.isEmpty()) null else when (name) {
         "shadowModelView" -> modelView
         "shadowModelViewInverse" -> inverseModelView
         "shadowProjection" -> projection
@@ -338,11 +344,11 @@ object ShadowRenderer {
     private fun compile(
         device: GpuDevice,
         color: Boolean,
-        program: dev.vertex.frontend.LoadedProgram?,
+        fallbackProgram: dev.vertex.frontend.LoadedProgram?,
+        layerPrograms: Map<ChunkSectionLayer, dev.vertex.frontend.LoadedProgram?>,
         separateAo: Boolean,
-        midTexCoord: Boolean,
     ) {
-        packSamplerNames = program?.samplers.orEmpty()
+        packSamplerNames = (layerPrograms.values.filterNotNull() + listOfNotNull(fallbackProgram)).flatMap { it.samplers }
             .filterNot { it in setOf("tex", "texture", "gtexture") }.toSet()
         val layout = BindGroupLayout.builder()
             .withUniform("Sampler0", UniformType.COMBINED_IMAGE_SAMPLER)
@@ -350,43 +356,72 @@ object ShadowRenderer {
             .withUniform("ShadowUniforms", UniformType.UNIFORM_BUFFER)
             .withUniform("VertexPackUniforms", UniformType.UNIFORM_BUFFER)
             .build()
-        fun pipeline(multidraw: Boolean): RenderPipeline {
+        fun pipeline(layer: ChunkSectionLayer, multidraw: Boolean, shader: Identifier): RenderPipeline {
             val snippet = if (multidraw) RenderPipelines.MULTIDRAW_TERRAIN_SNIPPET else RenderPipelines.TERRAIN_SNIPPET
             val builder = RenderPipeline.builder(snippet)
-                .withLocation(id("pipeline/shadow${if (multidraw) "_multidraw" else ""}"))
-                .withVertexShader(id("shadow"))
-                .withFragmentShader(id("shadow"))
+                .withLocation(id("pipeline/shadow_${layer.name.lowercase()}${if (multidraw) "_multidraw" else ""}"))
+                .withVertexShader(shader)
+                .withFragmentShader(shader)
                 .withVertexBinding(0, TerrainMesh.vertexFormat())
                 .withBindGroupLayout(layout)
                 .withDepthStencilState(DepthStencilState(CompareOp.LESS_THAN_OR_EQUAL, true, 1.1f, 4f))
             if (color) builder.withColorTargetState(ColorTargetState.DEFAULT)
             return builder.build()
         }
-        val fallback = ShaderSource { shader, type -> when {
-            shader == id("shadow") && type == ShaderType.VERTEX -> VERTEX_SHADER
-            shader == id("shadow") && type == ShaderType.FRAGMENT -> if (color) COLOR_FRAGMENT else DEPTH_FRAGMENT
-            else -> loadResource(shader, type)
+        fun source(shader: Identifier, program: dev.vertex.frontend.LoadedProgram?) = ShaderSource { id, type -> when {
+            id == shader && program != null && type == ShaderType.VERTEX -> LegacyTranslator.shadowVertex(
+                program,
+                separateAo,
+                dev.vertex.translate.TerrainRequirementScanner.scan(program.vertexSource).midTexCoord,
+            )
+            id == shader && program != null && type == ShaderType.FRAGMENT -> LegacyTranslator.shadowFragment(program)
+            id == shader && program == null && type == ShaderType.VERTEX -> VERTEX_SHADER
+            id == shader && program == null && type == ShaderType.FRAGMENT -> if (color) COLOR_FRAGMENT else DEPTH_FRAGMENT
+            else -> loadResource(id, type)
         } }
-        val translated = program?.let { pack -> ShaderSource { shader, type -> when {
-            shader == id("shadow") && type == ShaderType.VERTEX -> LegacyTranslator.shadowVertex(pack, separateAo, midTexCoord)
-            shader == id("shadow") && type == ShaderType.FRAGMENT -> LegacyTranslator.shadowFragment(pack)
-            else -> loadResource(shader, type)
-        } } }
-        var usedPack = translated != null
-        fun compilePipeline(pipe: RenderPipeline): CompiledRenderPipeline {
-            val result = translated?.let {
-                runCatching { device.compilePipeline(pipe, it) }
-                    .onFailure { Vertex.log.warn("[Vertex] translated shadow pipeline rejected: {}", pipe.location, it) }
-                    .getOrNull()
+        var translatedLayers = 0
+        var specializedLayers = 0
+        for ((layer, selectedProgram) in layerPrograms) {
+            val shader = id("shadow_${layer.name.lowercase()}")
+            var layerUsedPack = true
+            for (multidraw in listOf(false, true)) {
+                val terrainPipeline = TerrainMesh.pipelineFor(layer, multidraw)
+                    ?: error("terrain pipeline unavailable for shadow $layer")
+                val shadowPipeline = pipeline(layer, multidraw, shader)
+                val candidates = listOfNotNull(selectedProgram, fallbackProgram.takeIf { it !== selectedProgram })
+                var built: CompiledRenderPipeline? = null
+                for (candidate in candidates) {
+                    built = runCatching { device.compilePipeline(shadowPipeline, source(shader, candidate)) }
+                        .onFailure { Vertex.log.warn(
+                            "[Vertex] translated {} shadow pipeline rejected: {}",
+                            layer.name.lowercase(), shadowPipeline.location, it,
+                        ) }.getOrNull()
+                    if (built != null) {
+                        if (candidate !== selectedProgram) layerUsedPack = false
+                        break
+                    }
+                }
+                if (built == null) {
+                    layerUsedPack = false
+                    built = device.compilePipeline(shadowPipeline, source(shader, null))
+                        ?: error("shadow pipeline compilation failed for $layer")
+                }
+                compiled[terrainPipeline] = built
             }
-            if (result != null) return result
-            usedPack = false
-            return device.compilePipeline(pipe, fallback) ?: error("shadow pipeline compilation failed")
+            if (selectedProgram != null && layerUsedPack) {
+                translatedLayers++
+                if (selectedProgram !== fallbackProgram) specializedLayers++
+            }
         }
-        base = compilePipeline(pipeline(false))
-        multidraw = compilePipeline(pipeline(true))
-        if (usedPack) Vertex.log.info("[Vertex] shadow program translated: {}", program!!.name)
-        else if (program != null) Vertex.log.warn("[Vertex] {} shadow program rejected; using compatible fallback", program.name)
+        if (translatedLayers > 0) Vertex.log.info(
+            "[Vertex] shadow programs translated: {} layers{}",
+            translatedLayers,
+            if (specializedLayers == 0) "" else "; specialized=$specializedLayers",
+        )
+        if (translatedLayers < layerPrograms.size && fallbackProgram != null) Vertex.log.warn(
+            "[Vertex] {} shadow layer(s) required a compatible fallback",
+            layerPrograms.size - translatedLayers,
+        )
     }
 
     private fun loadResource(id: Identifier, type: ShaderType?): String? {

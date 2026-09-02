@@ -115,6 +115,12 @@ object TerrainMesh {
                 packRoot, "gbuffers_terrain_solid", options, dimension,
             )
             val waterProg = dev.vertex.frontend.PackFrontend.loadWater(packRoot, options, dimension)
+            val shadowPrograms = listOfNotNull(
+                dev.vertex.frontend.PackFrontend.loadShadow(packRoot, options, dimension),
+                dev.vertex.frontend.PackFrontend.loadProgram(packRoot, "shadow_solid", options, dimension),
+                dev.vertex.frontend.PackFrontend.loadProgram(packRoot, "shadow_cutout", options, dimension),
+                dev.vertex.frontend.PackFrontend.loadProgram(packRoot, "shadow_block", options, dimension),
+            )
             blockMaterials = BlockMaterialMap.load(packRoot.resolve("shaders/block.properties")).also {
                 Vertex.log.info("[Vertex] terrain block material map: {} rules", it.size)
             }
@@ -123,7 +129,9 @@ object TerrainMesh {
             noiseSampler = layerPrograms.flatMap { it.samplers }.contains("noisetex")
             packSamplers = layerPrograms.flatMap { it.samplers }.toSet()
             createMaterialTextures(device)
-            val layerRequirements = layerPrograms.map { TerrainRequirementScanner.scan(it.vertexSource) }
+            val layerRequirements = (layerPrograms + shadowPrograms).map {
+                TerrainRequirementScanner.scan(it.vertexSource)
+            }
             requirements = TerrainRequirements(
                 layerRequirements.any(TerrainRequirements::entity),
                 layerRequirements.any(TerrainRequirements::midTexCoord),
@@ -217,6 +225,14 @@ object TerrainMesh {
     fun isMultidrawPipeline(pipeline: RenderPipeline): Boolean? = prepared?.let { state -> when (pipeline) {
         state.solid.multidraw, state.cutout.multidraw, state.water?.multidraw -> true
         state.solid.base, state.cutout.base, state.water?.base -> false
+        else -> null
+    } }
+
+    @JvmStatic
+    fun layerForPipeline(pipeline: RenderPipeline): ChunkSectionLayer? = prepared?.let { state -> when (pipeline) {
+        state.solid.base, state.solid.multidraw -> ChunkSectionLayer.SOLID
+        state.cutout.base, state.cutout.multidraw -> ChunkSectionLayer.CUTOUT
+        state.water?.base, state.water?.multidraw -> ChunkSectionLayer.TRANSLUCENT
         else -> null
     } }
     @JvmStatic
