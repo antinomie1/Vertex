@@ -370,10 +370,10 @@ $outputs
         require(fragmentVaryings.keys.all(varyings::containsKey)) { "dynamic fragment references an undeclared varying" }
         var body = collapseSingleFragmentOutput(program.fragmentSource)
             .replace(Regex("""^\s*#(?:version|extension)[^\n]*""", RegexOption.MULTILINE), "")
-            .replace(Regex("""uniform\s+sampler2D\s+(texture|gtexture)\s*;"""), "")
+            .replace(Regex("""uniform\s+sampler2D\s+(?:tex|texture|gtexture)\s*;"""), "")
             .replace(Regex("""uniform\s+sampler2D\s+lightmap\s*;"""), "")
             .let { replaceVaryingInputs(it, varyings, 2) }
-            .replace(Regex("""\b(texture|gtexture)\b(?!\s*\()"""), "Sampler0")
+            .replace(Regex("""\b(?:tex|texture|gtexture)\b(?!\s*\()"""), "Sampler0")
             .replace(Regex("""\blightmap\b"""), "Sampler2")
             .let(::modernizeTextureCalls)
             .replace(Regex("""\bgl_FragData\s*\[\s*0\s*]"""), "fragColor")
@@ -465,9 +465,9 @@ vec4 vertexFullscreenSky(vec3 position) {
         require(fragmentVaryings.keys.all(varyings::containsKey)) { "sky fragment references an undeclared varying" }
         val body = collapseSingleFragmentOutput(program.fragmentSource)
             .replace(Regex("""^\s*#(?:version|extension)[^\n]*""", RegexOption.MULTILINE), "")
-            .replace(Regex("""uniform\s+sampler2D\s+(texture|gtexture)\s*;"""), "")
+            .replace(Regex("""uniform\s+sampler2D\s+(?:tex|texture|gtexture)\s*;"""), "")
             .let { replaceVaryingInputs(it, varyings, 2) }
-            .replace(Regex("""\b(texture|gtexture)\b(?!\s*\()"""), "Sampler0")
+            .replace(Regex("""\b(?:tex|texture|gtexture)\b(?!\s*\()"""), "Sampler0")
             .replace(Regex("""\bgl_FragData\s*\[\s*0\s*]"""), "fragColor")
             .replace(Regex("""\bgl_FragColor\b"""), "fragColor")
             .let(::modernizeTextureCalls)
@@ -476,7 +476,7 @@ vec4 vertexFullscreenSky(vec3 position) {
         require(!Regex("""gl_FragData\s*\[\s*[1-9]""").containsMatchIn(body)) {
             "sky fragment programs must write only render target 0"
         }
-        val sampler = if (program.samplers.any { it == "texture" || it == "gtexture" }) "uniform sampler2D Sampler0;" else ""
+        val sampler = if (program.samplers.any { it in BASE_TEXTURE_SAMPLERS }) "uniform sampler2D Sampler0;" else ""
         return """#version 450
 #extension GL_ARB_separate_shader_objects : require
 ${if (includeFog) "#include <minecraft:fog.glsl>" else ""}
@@ -682,6 +682,7 @@ layout(std140) uniform ShadowUniforms { mat4 vertexShadowMvp; };
     private val SHADOW_MATRIX_UNIFORMS = setOf(
         "shadowModelView", "shadowModelViewInverse", "shadowProjection", "shadowProjectionInverse",
     )
+    private val BASE_TEXTURE_SAMPLERS = setOf("tex", "texture", "gtexture")
     private val MODERN_FRAGMENT_OUTPUT = Regex(
         """(?m)^\s*(?:layout\s*\(\s*location\s*=\s*0\s*\)\s*)?out\s+(float|vec[234])\s+([A-Za-z_]\w*)\s*;\s*$""",
     )

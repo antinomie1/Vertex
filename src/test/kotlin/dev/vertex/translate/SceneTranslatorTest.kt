@@ -88,4 +88,16 @@ void main() { gl_FragColor = texture2D(texture, texcoord); }
         assertContains(textured, "layout(location = 1) in vec2 UV0;")
         assertContains(textured, "vec4(UV0, 0.0, 1.0)")
     }
+
+    @Test
+    fun `maps the short base texture alias in dynamic programs`() {
+        val fragment = LegacyTranslator.dynamicFragment(particle.copy(
+            fragmentSource = particle.fragmentSource
+                .replace("uniform sampler2D texture;", "uniform sampler2D tex;")
+                .replace("texture2D(texture, texcoord)", "texture2D(tex, texcoord)"),
+            samplers = listOf("tex"),
+        ))
+        assertContains(fragment, "uniform sampler2D Sampler0;")
+        assertContains(fragment, "texture(Sampler0, texcoord)")
+    }
 }
