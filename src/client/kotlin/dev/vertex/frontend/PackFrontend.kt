@@ -70,7 +70,9 @@ object PackFrontend {
     }
 
     fun loadTerrain(packRoot: Path, options: Map<String, String> = emptyMap(), dimension: String? = null): LoadedProgram {
-        val sh = DimensionShaderRoots.ordered(packRoot, dimension).firstOrNull { hasPair(it, "gbuffers_terrain") }
+        val sh = DimensionShaderRoots.ordered(packRoot, dimension).firstOrNull {
+            hasPair(it, "gbuffers_terrain") && programEnabled(packRoot, it, "gbuffers_terrain", options)
+        }
             ?: packRoot.resolve("shaders")
         val vshFile = sh.resolve("gbuffers_terrain.vsh")
         val fshFile = sh.resolve("gbuffers_terrain.fsh")
@@ -118,7 +120,9 @@ object PackFrontend {
     fun loadShadow(packRoot: Path, options: Map<String, String> = emptyMap(), dimension: String? = null): LoadedProgram? {
         val match = DimensionShaderRoots.ordered(packRoot, dimension).asSequence()
             .flatMap { sh -> listOf("shadow", "shadow_solid").asSequence().map { sh to it } }
-            .firstOrNull { (sh, name) -> hasPair(sh, name) } ?: return null
+            .firstOrNull { (sh, name) ->
+                hasPair(sh, name) && programEnabled(packRoot, sh, name, options)
+            } ?: return null
         val (sh, name) = match
         return load(sh, name, options)
     }
@@ -131,7 +135,9 @@ object PackFrontend {
     ): LoadedProgram? {
         val match = DimensionShaderRoots.ordered(packRoot, dimension).asSequence()
             .flatMap { sh -> aliases.asSequence().map { sh to it } }
-            .firstOrNull { (sh, stem) -> hasPair(sh, stem) } ?: return null
+            .firstOrNull { (sh, stem) ->
+                hasPair(sh, stem) && programEnabled(packRoot, sh, stem, options)
+            } ?: return null
         val (sh, stem) = match
         val vsh = normalizeInterfaces(ShaderPreprocessor(includeRoots(sh), options).process(sh.resolve("$stem.vsh")), true)
         val fsh = normalizeInterfaces(ShaderPreprocessor(includeRoots(sh), options).process(sh.resolve("$stem.fsh")), false)

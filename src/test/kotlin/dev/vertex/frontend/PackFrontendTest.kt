@@ -170,4 +170,31 @@ class PackFrontendTest {
         val program = PackFrontend.loadScreenChain(pack).single()
         assertContains(program.vertexSource, "sharedProgram")
     }
+
+    @Test
+    fun `applies program conditions to world render families`() {
+        val pack = Files.createTempDirectory("vertex-pack-world-program-enabled")
+        val shaders = pack.resolve("shaders")
+        val world = shaders.resolve("world0").createDirectories()
+        shaders.resolve("shaders.properties").writeText(
+            "program.world0/gbuffers_entities_translucent.enabled=false\n" +
+                "program.world0/shadow.enabled=false\n",
+        )
+        for (name in listOf("gbuffers_entities_translucent", "shadow")) {
+            world.resolve("$name.vsh").writeText("void main() { gl_Position = vec4(0.0); }\n")
+            world.resolve("$name.fsh").writeText("void main() { gl_FragColor = vec4(1.0); }\n")
+            shaders.resolve("$name.vsh").writeText("vec3 sharedProgram;\nvoid main() { gl_Position = vec4(0.0); }\n")
+            shaders.resolve("$name.fsh").writeText("void main() { gl_FragColor = vec4(1.0); }\n")
+        }
+
+        assertContains(
+            PackFrontend.loadProgram(pack, "gbuffers_entities_translucent", dimension = "minecraft:overworld")!!
+                .vertexSource,
+            "sharedProgram",
+        )
+        assertContains(
+            PackFrontend.loadShadow(pack, dimension = "minecraft:overworld")!!.vertexSource,
+            "sharedProgram",
+        )
+    }
 }
