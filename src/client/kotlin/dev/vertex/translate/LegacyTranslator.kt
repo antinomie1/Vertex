@@ -223,6 +223,10 @@ $outputs
     /** Block/textured-lit variant using the BLOCK vertex ABI (no UV1 or normal). */
     fun blockVertex(program: LoadedProgram): String {
         val varyings = varyingDeclarations(program.vertexSource)
+        val tangentAttribute = TANGENT_ATTRIBUTE.find(program.vertexSource)?.groupValues?.get(1)
+        val midTexCoordType = Regex(
+            """(?m)^\s*(?:attribute|in)\s+(?:(?:lowp|mediump|highp)\s+)?(\w+)\s+mc_midTexCoord\s*;""",
+        ).find(program.vertexSource)?.groupValues?.get(1)
         var body = program.vertexSource
             .replace(Regex("""^\s*#(?:version|extension)[^\n]*""", RegexOption.MULTILINE), "")
             .replace(VARYING, "")
@@ -230,18 +234,22 @@ $outputs
             .replace(Regex("""\bgl_ModelViewProjectionMatrix\b"""), "(ProjMat * ModelViewMat)")
             .replace(Regex("""\bgl_ModelViewMatrix\b"""), "ModelViewMat")
             .replace(Regex("""\bgl_ProjectionMatrix\b"""), "ProjMat")
+            .replace(Regex("""\bgl_NormalMatrix\b"""), "mat3(ModelViewMat)")
+            .replace(Regex("""\bgl_Normal\b"""), "vec3(0.0, 1.0, 0.0)")
             .replace(Regex("""\bgl_TextureMatrix\s*\[\s*[01]\s*]"""), "mat4(1.0)")
-            .replace(Regex("""\bgl_MultiTexCoord0\b"""), "vec4(0.0)")
-            .replace(Regex("""\bgl_MultiTexCoord[12]\b"""), "vec4(0.0)")
             .replace(Regex("""\bgl_MultiTexCoord0\b"""), "vec4(UV0, 0.0, 1.0)")
-            .replace(Regex("""\bgl_MultiTexCoord[12]\b"""), "vec4(UV2, 0.0, 1.0)")
+            .replace(Regex("""\bgl_MultiTexCoord1\b"""), "vec4(0.0)")
+            .replace(Regex("""\bgl_MultiTexCoord2\b"""), "vec4(vec2(UV2) / 256.0, 0.0, 1.0)")
             .replace(Regex("""\bgl_Color\b"""), "Color")
             .replace(Regex("""\bgl_Vertex\b"""), "vec4(Position, 1.0)")
             .replace(Regex("""\bftransform\s*\(\s*\)"""), "(ProjMat * ModelViewMat * vec4(Position, 1.0))")
+            .replace(Regex("""\bmc_midTexCoord\b"""), if (midTexCoordType == "vec4") "vec4(UV0, 0.0, 1.0)" else "vec2(UV0)")
+            .replace(Regex("""\bmc_Entity\b"""), "vec4(0.0)")
+            .replace(Regex("""\bat_midBlock\b"""), "vec3(0.0)")
             .let(::modernizeTextureCalls)
             .let(LegacyUniformTranslator::translate)
-        require(!Regex("""\bgl_Normal(?:Matrix)?\b""").containsMatchIn(body)) {
-            "${program.name}: block vertex shader references unavailable normal attributes"
+        tangentAttribute?.let { attribute ->
+            body = body.replace(Regex("""\b${Regex.escape(attribute)}\b"""), "vec4(1.0, 0.0, 0.0, 1.0)")
         }
         val main = Regex("""void\s+main\s*\(\s*\)\s*\{""").find(body)
             ?: error("${program.name}: block vertex shader has no main()")

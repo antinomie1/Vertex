@@ -98,6 +98,9 @@ object PackFrontend {
         )
     }
 
+    fun loadBlock(packRoot: Path, options: Map<String, String> = emptyMap(), dimension: String? = null): LoadedProgram? =
+        loadPair(packRoot, listOf("gbuffers_block", "gbuffers_damagedblock"), options, dimension)
+
     fun loadParticle(packRoot: Path, options: Map<String, String> = emptyMap(), dimension: String? = null): LoadedProgram? =
         loadPair(packRoot, listOf("gbuffers_particles", "gbuffers_particle"), options, dimension)
 

@@ -74,11 +74,11 @@ object DynamicRenderer {
             device = gpu
             prepared = true
             val dimension = PackRuntime.dimension()
-            val dynamic = PackFrontend.loadDynamic(root, PackRuntime.options(), dimension)
-            if (dynamic == null) {
-                disable("no gbuffers_entities shader pair")
-            } else {
-                samplerNames = dynamic.samplers.toSet()
+            val options = PackRuntime.options()
+            val dynamic = PackFrontend.loadDynamic(root, options, dimension)
+            val block = PackFrontend.loadBlock(root, options, dimension)
+            samplerNames = (dynamic?.samplers.orEmpty() + block?.samplers.orEmpty()).toSet()
+            dynamic?.let { program ->
                 runCatching {
                     val failures = compileGroup(
                         gpu,
@@ -86,15 +86,15 @@ object DynamicRenderer {
                         entityShaderId,
                         shaderSource(
                             entityShaderId,
-                            LegacyTranslator.dynamicVertex(dynamic),
+                            LegacyTranslator.dynamicVertex(program),
                             LegacyTranslator.dynamicFragment(
-                                dynamic,
+                                program,
                                 dropExtraTargets = true,
                                 reverseDepth = PackChain.usesReverseDepth(),
                             ),
                         ),
                         ::compatible,
-                        dynamic.samplers.toSet(),
+                        program.samplers.toSet(),
                         setOf("EMISSIVE"),
                     )
                     if (entityPipelines.any(pipelines::containsKey)) {
@@ -104,34 +104,45 @@ object DynamicRenderer {
                             entityPipelines.count(pipelines::containsKey),
                             if (failures == 0) "" else "; skipped=$failures",
                         )
-                    } else disable("dynamic shader pair rejected by RenderPearl")
-                    runCatching {
-                        val blockFailures = compileGroup(
-                            gpu,
-                            blockPipelines,
+                    } else if (failures > 0) {
+                        Vertex.log.warn("[Vertex] entity shader rejected by all {} compatible pipelines", failures)
+                    }
+                }.onFailure { Vertex.log.warn("[Vertex] entity shader rejected; retaining vanilla entity path", it) }
+            }
+            block?.let { program ->
+                runCatching {
+                    val failures = compileGroup(
+                        gpu,
+                        blockPipelines,
+                        blockShaderId,
+                        shaderSource(
                             blockShaderId,
-                            shaderSource(
-                                blockShaderId,
-                                LegacyTranslator.blockVertex(dynamic),
-                                LegacyTranslator.dynamicFragment(
-                                    dynamic,
-                                    dropExtraTargets = true,
-                                    reverseDepth = PackChain.usesReverseDepth(),
-                                ),
+                            LegacyTranslator.blockVertex(program),
+                            LegacyTranslator.dynamicFragment(
+                                program,
+                                dropExtraTargets = true,
+                                reverseDepth = PackChain.usesReverseDepth(),
                             ),
-                            ::blockCompatible,
-                            dynamic.samplers.toSet(),
-                            setOf("EMISSIVE"),
+                        ),
+                        ::blockCompatible,
+                        program.samplers.toSet(),
+                        setOf("EMISSIVE"),
+                    )
+                    if (blockPipelines.any(pipelines::containsKey)) {
+                        Vertex.log.info(
+                            "[Vertex] block render bridge armed: {} pipelines{}",
+                            blockPipelines.count(pipelines::containsKey),
+                            if (failures == 0) "" else "; skipped=$failures",
                         )
-                        if (blockPipelines.any(pipelines::containsKey)) {
-                            Vertex.log.info(
-                                "[Vertex] block render bridge armed: {} pipelines{}",
-                                blockPipelines.count(pipelines::containsKey),
-                                if (blockFailures == 0) "" else "; skipped=$blockFailures",
-                            )
-                        }
-                    }.onFailure { Vertex.log.debug("[Vertex] block shader rejected; retaining vanilla path", it) }
-                }.onFailure { disable("dynamic pipeline preparation", it) }
+                    } else if (failures > 0) {
+                        Vertex.log.warn("[Vertex] block shader rejected by all {} compatible pipelines", failures)
+                    }
+                }.onFailure { Vertex.log.warn("[Vertex] block shader rejected; retaining vanilla block path", it) }
+            }
+            if (entityPipelines.none(pipelines::containsKey) && blockPipelines.none(pipelines::containsKey)) {
+                disable("no compatible entity or block shader pair")
+            } else if (entityPipelines.none(pipelines::containsKey)) {
+                context.health.downgrade(ProgramFamily.HAND, RenderTier.TIER_1, "entity shader bridge unavailable")
             }
             compileOptionalSceneFamilies(gpu, root, dimension)
         } catch (t: Throwable) {

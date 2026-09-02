@@ -56,8 +56,22 @@ void main() { gl_FragColor = texture2D(texture, texcoord); }
 
     @Test
     fun `block stages expose the compact block ABI`() {
-        val vertex = LegacyTranslator.blockVertex(particle)
+        val vertex = LegacyTranslator.blockVertex(particle.copy(
+            vertexSource = particle.vertexSource.replace(
+                "#version 120",
+                "#version 120\nattribute vec4 at_tangent;\nattribute vec2 mc_midTexCoord;",
+            ).replace(
+                "gl_Position = ftransform();",
+                "gl_Position = ftransform(); vec3 normal = gl_NormalMatrix * gl_Normal; " +
+                    "vec4 tangent = at_tangent; texcoord = mc_midTexCoord; vec2 light = gl_MultiTexCoord2.xy;",
+            ),
+        ))
         assertContains(vertex, "layout(location = 3) in ivec2 UV2;")
+        assertContains(vertex, "vec4(UV0, 0.0, 1.0)")
+        assertContains(vertex, "mat3(ModelViewMat) * vec3(0.0, 1.0, 0.0)")
+        assertContains(vertex, "vec4 tangent = vec4(1.0, 0.0, 0.0, 1.0)")
+        assertContains(vertex, "vec2(UV2) / 256.0")
         assertFalse(vertex.contains("layout(location = 3) in ivec2 UV1;"))
+        assertFalse(vertex.contains("gl_Normal"))
     }
 }
