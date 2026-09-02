@@ -286,6 +286,108 @@ $outputs
     fun texturedSkyVertex(program: LoadedProgram): String =
         auxiliaryVertex(program, includeColor = false, includeUv = true, includeNormal = false, includeFog = false)
 
+    /** Adapts legacy cloud attributes to the procedural CloudFaces buffer used by modern clients. */
+    fun cloudVertex(program: LoadedProgram): String {
+        val varyings = varyingDeclarations(program.vertexSource)
+        var body = program.vertexSource
+            .replace(Regex("""^\s*#(?:version|extension)[^\n]*""", RegexOption.MULTILINE), "")
+            .replace(VARYING, "")
+            .replace(Regex("""(?m)^\s*(?:attribute|in)\s+(?:(?:lowp|mediump|highp)\s+)?\w+\s+\w+\s*;"""), "")
+            .replace(Regex("""\bgl_ModelViewProjectionMatrix\b"""), "(ProjMat * ModelViewMat)")
+            .replace(Regex("""\bgl_ModelViewMatrix\b"""), "ModelViewMat")
+            .replace(Regex("""\bgl_ProjectionMatrix\b"""), "ProjMat")
+            .replace(Regex("""\bgl_NormalMatrix\b"""), "mat3(ModelViewMat)")
+            .replace(Regex("""\bgl_TextureMatrix\s*\[\s*[012]\s*]"""), "mat4(1.0)")
+            .replace(Regex("""\bgl_MultiTexCoord0\b"""), "vec4(vertexPackCloud.uv, 0.0, 1.0)")
+            .replace(Regex("""\bgl_MultiTexCoord[12]\b"""), "vec4(0.0)")
+            .replace(Regex("""\bgl_Color\b"""), "vertexPackCloud.color")
+            .replace(Regex("""\bgl_Normal\b"""), "vertexPackCloud.normal")
+            .replace(Regex("""\bgl_Vertex\b"""), "vec4(vertexPackCloud.position, 1.0)")
+            .replace(Regex("""\bftransform\s*\(\s*\)"""),
+                "(ProjMat * ModelViewMat * vec4(vertexPackCloud.position, 1.0))")
+            .let(::modernizeTextureCalls)
+            .let(LegacyUniformTranslator::translate)
+        val main = Regex("""void\s+main\s*\(\s*\)\s*\{""").find(body)
+            ?: error("${program.name}: cloud vertex shader has no main()")
+        body = body.replaceRange(main.range, main.value + "\n    VertexPackCloudVertex vertexPackCloud = vertexPackDecodeCloud();")
+        val locations = varyingLocations(varyings, 2)
+        val outputs = varyings.entries.joinToString("\n") { (name, type) ->
+            "layout(location = ${locations.getValue(name)}) ${interpolation(type)}out $type $name;"
+        }
+        return """#version 450
+#extension GL_ARB_separate_shader_objects : require
+#include <minecraft:dynamictransforms.glsl>
+#include <minecraft:projection.glsl>
+layout(std140) uniform CloudInfo {
+    vec4 CloudColor;
+    vec3 CloudOffset;
+    vec3 CellSize;
+};
+uniform isamplerBuffer CloudFaces;
+$outputs
+
+struct VertexPackCloudVertex {
+    vec3 position;
+    vec3 normal;
+    vec2 uv;
+    vec4 color;
+};
+
+VertexPackCloudVertex vertexPackDecodeCloud() {
+    const int FLAG_MASK_DIR = 7;
+    const int FLAG_INSIDE_FACE = 1 << 4;
+    const int FLAG_EXTRA_Z = 1 << 6;
+    const int FLAG_EXTRA_X = 1 << 7;
+    const vec3 vertices[24] = vec3[24](
+        vec3(1,0,0), vec3(1,0,1), vec3(0,0,1), vec3(0,0,0),
+        vec3(0,1,0), vec3(0,1,1), vec3(1,1,1), vec3(1,1,0),
+        vec3(0,0,0), vec3(0,1,0), vec3(1,1,0), vec3(1,0,0),
+        vec3(1,0,1), vec3(1,1,1), vec3(0,1,1), vec3(0,0,1),
+        vec3(0,0,1), vec3(0,1,1), vec3(0,1,0), vec3(0,0,0),
+        vec3(1,0,0), vec3(1,1,0), vec3(1,1,1), vec3(1,0,1)
+    );
+    const vec3 normals[6] = vec3[6](
+        vec3(0,-1,0), vec3(0,1,0), vec3(0,0,-1),
+        vec3(0,0,1), vec3(-1,0,0), vec3(1,0,0)
+    );
+    int quadVertex = gl_VertexIndex % 4;
+    int index = (gl_VertexIndex / 4) * 3;
+    int cellX = texelFetch(CloudFaces, index).r;
+    int cellZ = texelFetch(CloudFaces, index + 1).r;
+    int flags = texelFetch(CloudFaces, index + 2).r;
+    int direction = flags & FLAG_MASK_DIR;
+    bool inside = (flags & FLAG_INSIDE_FACE) != 0;
+    cellX = (cellX << 1) | ((flags & FLAG_EXTRA_X) >> 7);
+    cellZ = (cellZ << 1) | ((flags & FLAG_EXTRA_Z) >> 6);
+    vec3 corner = vertices[direction * 4 + (inside ? 3 - quadVertex : quadVertex)];
+    vec3 position = corner * CellSize + vec3(cellX, 0, cellZ) * CellSize + CloudOffset;
+    vec2 uv = (vec2(cellX, cellZ) + corner.xz) / 256.0;
+    return VertexPackCloudVertex(position, normals[direction] * (inside ? -1.0 : 1.0), uv, CloudColor);
+}
+""" + body.trimStart()
+    }
+
+    fun cloudFragment(program: LoadedProgram, reverseDepth: Boolean = false): String {
+        val source = program.fragmentSource
+            .replace(Regex("""uniform\s+sampler2D\s+(?:tex|texture|gtexture)\s*;"""), "")
+            .replace(Regex("""\b(?:texture2D|texture)\s*\(\s*(?:tex|texture|gtexture)\s*,"""),
+                "vertexPackCloudTexture(")
+        val translated = dynamicFragment(
+            program.copy(
+                fragmentSource = source,
+                samplers = program.samplers.filterNot { it in BASE_TEXTURE_SAMPLERS },
+            ),
+            dropExtraTargets = true,
+            reverseDepth = reverseDepth,
+            includeFog = false,
+        )
+        return translated.replace(
+            "vec4 vertexPackAlphaTest(vec4 value)",
+            "vec4 vertexPackCloudTexture(vec2 uv) { return vec4(1.0); }\n" +
+                "vec4 vertexPackAlphaTest(vec4 value)",
+        )
+    }
+
     private fun auxiliaryVertex(
         program: LoadedProgram,
         includeColor: Boolean,

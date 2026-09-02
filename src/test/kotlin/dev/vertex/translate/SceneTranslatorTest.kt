@@ -100,4 +100,25 @@ void main() { gl_FragColor = texture2D(texture, texcoord); }
         assertContains(fragment, "uniform sampler2D Sampler0;")
         assertContains(fragment, "texture(Sampler0, texcoord)")
     }
+
+    @Test
+    fun `adapts procedural cloud geometry without a vertex binding`() {
+        val program = particle.copy(
+            name = "gbuffers_clouds",
+            vertexSource = """
+                varying vec2 texcoord;
+                varying vec4 tint;
+                void main() {
+                    texcoord = gl_MultiTexCoord0.xy;
+                    tint = gl_Color;
+                    gl_Position = ftransform();
+                }
+            """.trimIndent(),
+        )
+        val vertex = LegacyTranslator.cloudVertex(program)
+        val fragment = LegacyTranslator.cloudFragment(program)
+        assertContains(vertex, "uniform isamplerBuffer CloudFaces;")
+        assertContains(vertex, "VertexPackCloudVertex vertexPackCloud")
+        assertContains(fragment, "vertexPackCloudTexture(texcoord)")
+    }
 }

@@ -356,6 +356,21 @@ object DynamicRenderer {
             ::positionTexture,
             LegacyTranslator::texturedSkyVertex,
         ) { LegacyTranslator.skyFragment(it, includeFog = false, reverseDepth = PackChain.usesReverseDepth()) }
+        PackFrontend.loadProgram(root, "gbuffers_clouds", options, dimension)?.let { program ->
+            val cloudSamplers = program.samplers.filterNot { it in setOf("tex", "texture", "gtexture") }.toSet()
+            samplerNames = samplerNames + cloudSamplers
+            val cloudPipelines = listOf(RenderPipelines.FLAT_CLOUDS, RenderPipelines.CLOUDS)
+            val armed = compileOverride(
+                gpu,
+                program,
+                cloudPipelines,
+                ::noVertexInput,
+                LegacyTranslator.cloudVertex(program),
+                LegacyTranslator.cloudFragment(program, PackChain.usesReverseDepth()),
+                samplers = cloudSamplers,
+            )
+            if (armed > 0) { groups++; pipelineCount += armed }
+        }
         if (groups > 0) Vertex.log.info(
             "[Vertex] specialized material bridges armed: {} groups, {} pipelines",
             groups, pipelineCount,
@@ -370,6 +385,7 @@ object DynamicRenderer {
         vertex: String,
         fragment: String,
         bindAtlasFallback: Boolean = false,
+        samplers: Set<String> = program.samplers.toSet(),
     ): Int {
         val shaderId = Identifier.fromNamespaceAndPath("vertex", "dynamic_${program.name}")
         val previous = originals.associateWith { pipelines[it] }
@@ -379,7 +395,7 @@ object DynamicRenderer {
             shaderId,
             shaderSource(shaderId, vertex, fragment),
             compatible,
-            program.samplers.toSet() + if (bindAtlasFallback && fragment.contains("uniform sampler2D Sampler0;")) {
+            samplers + if (bindAtlasFallback && fragment.contains("uniform sampler2D Sampler0;")) {
                 setOf("Sampler0")
             } else emptySet(),
             setOf("EMISSIVE"),
@@ -515,6 +531,9 @@ object DynamicRenderer {
         pipeline.getVertexFormatBinding(0)?.let {
             it.contains("Position") && it.contains("UV0") && it.getElements().size == 2
         } == true
+
+    private fun noVertexInput(pipeline: RenderPipeline): Boolean =
+        pipeline.getVertexFormatBinding(0) == null
 
     private fun loadResource(id: Identifier, type: ShaderType?): String? {
         val location = type?.idConverter()?.idToFile(id) ?: id
