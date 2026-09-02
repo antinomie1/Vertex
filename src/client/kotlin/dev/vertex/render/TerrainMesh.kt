@@ -120,6 +120,7 @@ object TerrainMesh {
                 dev.vertex.frontend.PackFrontend.loadProgram(packRoot, "shadow_solid", options, dimension),
                 dev.vertex.frontend.PackFrontend.loadProgram(packRoot, "shadow_cutout", options, dimension),
                 dev.vertex.frontend.PackFrontend.loadProgram(packRoot, "shadow_block", options, dimension),
+                dev.vertex.frontend.PackFrontend.loadProgram(packRoot, "shadow_water", options, dimension),
             )
             blockMaterials = BlockMaterialMap.load(packRoot.resolve("shaders/block.properties")).also {
                 Vertex.log.info("[Vertex] terrain block material map: {} rules", it.size)

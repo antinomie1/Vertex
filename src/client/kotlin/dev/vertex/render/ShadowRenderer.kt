@@ -162,14 +162,16 @@ object ShadowRenderer {
             val options = PackRuntime.options()
             val dimension = PackRuntime.dimension()
             val pack = PackFrontend.loadShadow(root, options, dimension)
-            val layerPrograms = mapOf(
-                ChunkSectionLayer.SOLID to (PackFrontend.loadProgram(root, "shadow_solid", options, dimension) ?: pack),
-                ChunkSectionLayer.CUTOUT to (
-                    PackFrontend.loadProgram(root, "shadow_cutout", options, dimension)
-                        ?: PackFrontend.loadProgram(root, "shadow_block", options, dimension)
-                        ?: pack
-                ),
-            )
+            val layerPrograms = buildMap {
+                put(ChunkSectionLayer.SOLID,
+                    PackFrontend.loadProgram(root, "shadow_solid", options, dimension) ?: pack)
+                put(ChunkSectionLayer.CUTOUT,
+                    PackFrontend.loadProgram(root, "shadow_cutout", options, dimension) ?: pack)
+                if (TerrainMesh.pipelineFor(ChunkSectionLayer.TRANSLUCENT, false) != null) {
+                    put(ChunkSectionLayer.TRANSLUCENT,
+                        PackFrontend.loadProgram(root, "shadow_water", options, dimension) ?: pack)
+                }
+            }
             parseShadowConstants(pack?.vertexSource)
             val separateAo = PackSemanticsParser.load(root, options, dimension).separateAo
             compile(device, colorView != null, pack, layerPrograms, separateAo)
@@ -197,7 +199,7 @@ object ShadowRenderer {
                 return
             }
             val renderEpoch = cache.epoch()
-            val hasGeometry = hasOpaqueGeometry(sections)
+            val hasGeometry = hasShadowGeometry(sections)
             val device = RenderSystem.getDevice()
             val encoder = device.createCommandEncoder()
             updateMatrix(encoder, angle)
@@ -212,6 +214,9 @@ object ShadowRenderer {
                 active = true
                 try {
                     sections.renderGroup(ChunkSectionLayerGroup.OPAQUE, pass, sampler, atlas, false)
+                    if (hasTranslucentPipeline()) {
+                        sections.renderGroup(ChunkSectionLayerGroup.TRANSLUCENT, pass, sampler, atlas, false)
+                    }
                 } finally {
                     active = false
                 }
@@ -221,7 +226,7 @@ object ShadowRenderer {
                 shadowValid = true
                 if (logged.compareAndSet(false, true)) Vertex.log.info("[Vertex] shadow terrain draw verified")
             } else if (emptyLogged.compareAndSet(false, true)) {
-                Vertex.log.info("[Vertex] shadow pass deferred until opaque sections are uploaded")
+                Vertex.log.info("[Vertex] shadow pass deferred until visible sections are uploaded")
                 cache.invalidate()
             } else {
                 // The visible-set object is created before the asynchronous chunk
@@ -299,21 +304,29 @@ object ShadowRenderer {
         encoder.writeToBuffer(uniformBuffer!!.slice(slot * SHADOW_SLOT_BYTES, 64L), staging)
     }
 
+    private fun hasTranslucentPipeline(): Boolean =
+        TerrainMesh.pipelineFor(ChunkSectionLayer.TRANSLUCENT, false)?.let(compiled::containsKey) == true
+
     @Suppress("CAST_NEVER_SUCCEEDS")
-    private fun hasOpaqueGeometry(sections: ChunkSectionsToRender): Boolean = when (sections) {
-        is ChunkSectionsToRender.DrawIndirect -> {
-            val groups = (sections as DrawIndirectAccessor).`vertex$drawGroups`()
-            listOf(ChunkSectionLayer.SOLID, ChunkSectionLayer.CUTOUT).any { layer ->
-                groups[layer].orEmpty().any { it.drawCount() > 0 }
+    private fun hasShadowGeometry(sections: ChunkSectionsToRender): Boolean {
+        val layers = if (hasTranslucentPipeline()) {
+            listOf(ChunkSectionLayer.SOLID, ChunkSectionLayer.CUTOUT, ChunkSectionLayer.TRANSLUCENT)
+        } else listOf(ChunkSectionLayer.SOLID, ChunkSectionLayer.CUTOUT)
+        return when (sections) {
+            is ChunkSectionsToRender.DrawIndirect -> {
+                val groups = (sections as DrawIndirectAccessor).`vertex$drawGroups`()
+                layers.any { layer ->
+                    groups[layer].orEmpty().any { it.drawCount() > 0 }
+                }
             }
-        }
-        is ChunkSectionsToRender.DrawSeparate -> {
-            val draws = (sections as DrawSeparateAccessor).`vertex$drawsPerLayer`()
-            listOf(ChunkSectionLayer.SOLID, ChunkSectionLayer.CUTOUT).any { layer ->
-                !draws[layer].orEmpty().isEmpty()
+            is ChunkSectionsToRender.DrawSeparate -> {
+                val draws = (sections as DrawSeparateAccessor).`vertex$drawsPerLayer`()
+                layers.any { layer ->
+                    !draws[layer].orEmpty().isEmpty()
+                }
             }
+            else -> false
         }
-        else -> false
     }
 
     private fun descriptor() = RenderPassDescriptor.builder { "vertex-shadow" }.also { builder ->
