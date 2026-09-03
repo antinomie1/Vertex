@@ -1,5 +1,12 @@
 # Vertex
 
+> **⚠️ 不保证兼容性，不保证稳定性**
+>
+> Vertex 是个人实验项目，按“原样”（AS-IS）提供，不附带任何形式的明示或默示保证。
+> 项目面向快照版本持续重构，**不保证**与任何 Minecraft / Fabric / 显卡驱动 / 光影包版本的兼容性，
+> 也**不保证**任何稳定性：随时可能出现崩溃、画面异常、性能退化，以及功能、配置或数据格式的破坏性变更，
+> 且不提供任何向后兼容或迁移保证。请仅用于开发验证与实验，使用前自行评估风险。
+
 Vertex 是一个实验性的 Fabric 客户端模组，目标是在 Minecraft 原生 Vulkan / RenderPearl 渲染器上运行 OptiFine、Iris 格式的光影包。项目目前处于 `0.1.0-alpha`，主要面向兼容性开发与验证，不代表已经兼容所有现有光影包。
 
 ## 当前能力
@@ -22,7 +29,7 @@ Vertex 是一个实验性的 Fabric 客户端模组，目标是在 Minecraft 原
 - Java 25
 - 支持项目所需 Vulkan 特性的显卡与驱动
 
-版本以 [`gradle.properties`](gradle.properties) 和 [`fabric.mod.json`](src/main/resources/fabric.mod.json) 为准。快照版本升级可能会造成 RenderPearl API 或 Mixin 注入点不兼容。
+版本以 [`gradle.properties`](gradle.properties) 和 [`fabric.mod.json`](src/main/resources/fabric.mod.json) 为准。快照版本升级可能会造成 RenderPearl API 或 Mixin 注入点不兼容，属预期行为而非缺陷。
 
 ## 使用
 
@@ -78,6 +85,8 @@ config/vertex-shaders.properties
 | `vertex.perfThresholdPercent` | 性能回退阈值百分比 |
 | `vertex.perfGate=true` | 超过性能阈值时视为失败 |
 
+> 注：上述属性、快捷键与设置格式均属实验性接口，随开发可能随时调整，不保证向后兼容。
+
 ## 代码结构
 
 - `src/main/kotlin/dev/vertex/translate`：预处理、传统 GLSL 兼容改写和 uniform 目录。
@@ -94,6 +103,10 @@ config/vertex-shaders.properties
 - 不兼容的程序族会降级或停用，并在日志中输出 `[Vertex]` 诊断；这不一定意味着整个光影包都已停用。
 - 当前开发基线是 Minecraft 快照版本，尚不提供稳定版迁移保证。
 
+## 开发方式
+
+本项目通过 vibe coding（AI 辅助编程）开发，大量代码由 AI 工具生成与迭代，未经全面人工审查。请以批判眼光对待代码与设计，并自行承担使用风险。
+
 ## 许可证
 
-项目元数据声明为 [GNU Lesser General Public License v3.0 only](https://www.gnu.org/licenses/lgpl-3.0.html)（SPDX：`LGPL-3.0-only`）。
+Vertex 以 [GNU General Public License v3.0 only](https://www.gnu.org/licenses/gpl-3.0.html)（SPDX：`GPL-3.0-only`）授权，许可证全文见 [LICENSE](LICENSE)。本软件按“原样”分发，**不提供任何保证**；详情见许可证第 15–17 条。
